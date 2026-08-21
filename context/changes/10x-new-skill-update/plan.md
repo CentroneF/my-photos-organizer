@@ -158,15 +158,15 @@ Existing change folders and branches are untouched. The new behavior applies onl
 
 #### Manual
 
-- [x] 1.3 Confirm the already-checked-out and alternate-ID interaction contracts
+- [x] 1.3 Confirm the already-checked-out and alternate-ID interaction contracts — 6b4ca64
 
 ### Phase 2: Gate change creation and update the handoff
 
 #### Automated
 
-- [ ] 2.1 Verify branch setup precedes change-folder creation and success output reports correct tracking
-- [ ] 2.2 Verify existing change-record and handoff behavior remains documented
+- [x] 2.1 Verify branch setup precedes change-folder creation and success output reports correct tracking
+- [x] 2.2 Verify existing change-record and handoff behavior remains documented
 
 #### Manual
 
-- [ ] 2.3 Confirm fresh, collision, and Git-failure paths in a disposable repository
+- [x] 2.3 Confirm fresh, collision, and Git-failure paths in a disposable repository
