@@ -818,8 +818,8 @@ starters:
     name: "Tauri"
     language_family: rust
     description: >
-      Lightweight desktop app shell: Rust backend + web frontend (any framework). Smaller and
-      faster than Electron.
+      Lightweight desktop app shell with a Rust backend and Dioxus frontend. Smaller and
+      faster than Electron, with a Cargo-only application toolchain.
     fit:
       - "cross-platform desktop with web UI"
       - "Rust comfort on the team"
@@ -834,10 +834,10 @@ starters:
     last_updated: 2026-04-22
     docs_url: "https://tauri.app"
     for: [desktop-app]
-    tags: [rust, lightweight, desktop]
+    tags: [rust, dioxus, lightweight, desktop]
     toolchain:
       package_manager: cargo
-    cmd_template: "npm create tauri-app@latest {name} -- --template react-ts --manager {pm} --yes"
+    cmd_template: "npm create tauri-app@latest {name} -- --template dioxus --manager {pm} --yes"
     deployment_defaults: [self-host, github-releases]
     bootstrapper_confidence: verified
     alternatives_to_consider: []
