@@ -164,9 +164,9 @@ Existing change folders and branches are untouched. The new behavior applies onl
 
 #### Automated
 
-- [x] 2.1 Verify branch setup precedes change-folder creation and success output reports correct tracking
-- [x] 2.2 Verify existing change-record and handoff behavior remains documented
+- [x] 2.1 Verify branch setup precedes change-folder creation and success output reports correct tracking — 9fd5748
+- [x] 2.2 Verify existing change-record and handoff behavior remains documented — 9fd5748
 
 #### Manual
 
-- [x] 2.3 Confirm fresh, collision, and Git-failure paths in a disposable repository
+- [x] 2.3 Confirm fresh, collision, and Git-failure paths in a disposable repository — 9fd5748

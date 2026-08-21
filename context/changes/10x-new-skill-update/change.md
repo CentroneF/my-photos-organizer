@@ -1,7 +1,7 @@
 ---
 change_id: 10x-new-skill-update
 title: 10x new skill update
-status: implementing
+status: implemented
 created: 2026-08-21
 updated: 2026-08-21
 archived_at: null
