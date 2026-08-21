@@ -158,7 +158,7 @@ Existing change folders and branches are untouched. The new behavior applies onl
 
 #### Manual
 
-- [ ] 1.3 Confirm the already-checked-out and alternate-ID interaction contracts
+- [x] 1.3 Confirm the already-checked-out and alternate-ID interaction contracts
 
 ### Phase 2: Gate change creation and update the handoff
 
