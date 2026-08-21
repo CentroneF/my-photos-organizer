@@ -153,8 +153,8 @@ Existing change folders and branches are untouched. The new behavior applies onl
 
 #### Automated
 
-- [ ] 1.1 Verify branch preflight, no-track setup, collision detection, and failure gating are documented
-- [ ] 1.2 Verify the skill forbids the incorrect origin/main upstream and auto-selection of alternates
+- [x] 1.1 Verify branch preflight, no-track setup, collision detection, and failure gating are documented
+- [x] 1.2 Verify the skill forbids the incorrect origin/main upstream and auto-selection of alternates
 
 #### Manual
 
