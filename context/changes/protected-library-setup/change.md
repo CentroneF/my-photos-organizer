@@ -1,9 +1,9 @@
 ---
 change_id: protected-library-setup
 title: Protected library setup
-status: new
+status: planned
 created: 2026-08-21
-updated: 2026-08-21
+updated: 2026-08-22
 archived_at: null
 ---
 
