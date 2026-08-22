@@ -37,6 +37,17 @@ struct FolderInvokeArgs<'a> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ImportSourceRequest<'a> {
+    folder_path: &'a str,
+}
+
+#[derive(Serialize)]
+struct ImportSourceInvokeArgs<'a> {
+    request: ImportSourceRequest<'a>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SetupRequest<'a> {
     folder_path: &'a str,
     password: &'a str,
@@ -61,7 +72,6 @@ struct FolderInspection {
 #[serde(rename_all = "camelCase")]
 struct SetupResult {
     folder_path: String,
-    message: String,
 }
 
 #[derive(Deserialize)]
@@ -72,6 +82,13 @@ struct CommandError {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RememberedLibrary {
+    state: String,
+    folder_path: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportSource {
     state: String,
     folder_path: Option<String>,
 }
@@ -133,7 +150,10 @@ pub fn App() -> Element {
     let mut question = use_signal(String::new);
     let mut answer = use_signal(String::new);
     let mut error = use_signal(String::new);
-    let mut success = use_signal(|| None::<SetupResult>);
+    let mut import_source = use_signal(|| ImportSource {
+        state: "missing".into(),
+        folder_path: None,
+    });
     let mut busy = use_signal(|| false);
     let mut recovery_question = use_signal(String::new);
     let mut show_recovery = use_signal(|| false);
@@ -165,6 +185,24 @@ pub fn App() -> Element {
                 Err(_) => {
                     step.set("folder".into());
                 }
+            }
+        });
+    });
+
+    use_effect(move || {
+        if step() != "home" {
+            return;
+        }
+        spawn(async move {
+            match invoke("remembered_import_source", JsValue::NULL).await {
+                Ok(value) => match serde_wasm_bindgen::from_value::<ImportSource>(value) {
+                    Ok(source) => import_source.set(source),
+                    Err(_) => error.set("Could not read the remembered import folder.".into()),
+                },
+                Err(value) => error.set(command_error(
+                    value,
+                    "Could not read the remembered import folder.",
+                )),
             }
         });
     });
@@ -233,6 +271,60 @@ pub fn App() -> Element {
         error.set(String::new());
     };
 
+    let choose_import_source = move |_| async move {
+        error.set(String::new());
+        let picker = PickerInvokeArgs {
+            options: PickerRequest {
+                directory: true,
+                multiple: false,
+                title: "Choose a folder to import from",
+            },
+        };
+        let Ok(args) = serde_wasm_bindgen::to_value(&picker) else {
+            error.set("Could not open the import-folder picker.".into());
+            return;
+        };
+        let selected = match invoke("plugin:dialog|open", args).await {
+            Ok(value) if !value.is_null() => value.as_string(),
+            Ok(_) => None,
+            Err(value) => {
+                error.set(command_error(
+                    value,
+                    "Could not open the import-folder picker.",
+                ));
+                return;
+            }
+        };
+        let Some(selected) = selected else { return };
+
+        busy.set(true);
+        let result = match serde_wasm_bindgen::to_value(&ImportSourceInvokeArgs {
+            request: ImportSourceRequest {
+                folder_path: &selected,
+            },
+        }) {
+            Ok(args) => invoke("save_import_source", args).await,
+            Err(_) => {
+                busy.set(false);
+                error.set("Could not save the selected import folder.".into());
+                return;
+            }
+        };
+        busy.set(false);
+        match result {
+            Ok(value) => match serde_wasm_bindgen::from_value::<ImportSource>(value) {
+                Ok(source) => import_source.set(source),
+                Err(_) => {
+                    error.set("The import-folder selection returned an unexpected response.".into())
+                }
+            },
+            Err(value) => error.set(command_error(
+                value,
+                "That folder cannot be used as the import source.",
+            )),
+        }
+    };
+
     let create = move |event: FormEvent| async move {
         event.prevent_default();
         error.set(String::new());
@@ -267,8 +359,8 @@ pub fn App() -> Element {
                     confirmation.set(String::new());
                     question.set(String::new());
                     answer.set(String::new());
-                    success.set(Some(created));
-                    step.set("complete".into());
+                    folder.set(created.folder_path);
+                    step.set("home".into());
                 }
                 Err(_) => error.set("Setup returned an unexpected response.".into()),
             },
@@ -315,8 +407,8 @@ pub fn App() -> Element {
             Ok(value) => match serde_wasm_bindgen::from_value::<SetupResult>(value) {
                 Ok(result) => {
                     password.set(String::new());
-                    success.set(Some(result));
-                    step.set("complete".into());
+                    folder.set(result.folder_path);
+                    step.set("home".into());
                 }
                 Err(_) => error.set("Unlock returned an unexpected response.".into()),
             },
@@ -380,8 +472,8 @@ pub fn App() -> Element {
                     new_password.set(String::new());
                     new_confirmation.set(String::new());
                     show_recovery.set(false);
-                    success.set(Some(result));
-                    step.set("complete".into());
+                    folder.set(result.folder_path);
+                    step.set("home".into());
                 }
                 Err(_) => error.set("Password reset returned an unexpected response.".into()),
             },
@@ -396,7 +488,7 @@ pub fn App() -> Element {
     };
     let step_two_class = if step() == "new" {
         "progress-dot active"
-    } else if step() == "complete" {
+    } else if step() == "home" {
         "progress-dot done"
     } else {
         "progress-dot"
@@ -493,15 +585,35 @@ pub fn App() -> Element {
                         p { class: "lede", "It may have moved or be offline. Choose it again; Photo Handler will only open a recognized library after its password is valid." }
                         if !folder().is_empty() { div { class: "folder-summary", span { "Remembered location" } strong { "{folder}" } } }
                         button { class: "primary-button", r#type: "button", onclick: choose_another, "Open existing library" }
-                    } else if let Some(created) = &*success.read() {
-                        p { class: "step-label success-label", "READY" }
-                        div { class: "success-icon", "✓" }
-                        h2 { "Your protected library is ready." }
-                        p { class: "lede", "{created.message}" }
-                        div { class: "folder-summary", span { "Library folder" } strong { "{created.folder_path}" } }
+                    } else if step() == "home" {
+                        p { class: "step-label success-label", "LIBRARY HOME" }
+                        h2 { "Choose where to import from." }
+                        p { class: "lede", "Your protected library is ready. Choosing an import folder only remembers its location; Photo Handler will not scan or modify its files yet." }
+                        div { class: "folder-summary", span { "Protected library" } strong { "{folder}" } }
+                        if import_source().state == "ready" {
+                            div { class: "folder-summary",
+                                span { "Import source" }
+                                strong { "{import_source().folder_path.clone().unwrap_or_default()}" }
+                                button { r#type: "button", onclick: choose_import_source, disabled: busy(), "Change" }
+                            }
+                        } else if import_source().state == "stale" {
+                            p { class: "step-label", "IMPORT FOLDER UNAVAILABLE" }
+                            p { class: "lede", "The remembered import folder may have moved or be offline. Choose another folder when it is available." }
+                            div { class: "folder-summary",
+                                span { "Remembered location" }
+                                strong { "{import_source().folder_path.clone().unwrap_or_default()}" }
+                                button { r#type: "button", onclick: choose_import_source, disabled: busy(), "Change" }
+                            }
+                        } else {
+                            button { class: "folder-picker", r#type: "button", onclick: choose_import_source, disabled: busy(),
+                                span { class: "folder-icon", "⌑" }
+                                span { strong { if busy() { "Saving import folder…" } else { "Choose import folder" } } small { "Any folder is allowed except your protected library" } }
+                                span { class: "arrow", "→" }
+                            }
+                        }
                     }
 
-                    if !error().is_empty() && (step() == "folder" || step() == "stale") { p { class: "error-message", role: "alert", "{error}" } }
+                    if !error().is_empty() && (step() == "folder" || step() == "stale" || step() == "home") { p { class: "error-message", role: "alert", "{error}" } }
                 }
             }
         }

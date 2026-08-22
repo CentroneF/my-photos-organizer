@@ -1,7 +1,7 @@
 ---
 change_id: choose-import-folder
 title: Choose import folder
-status: planned
+status: implementing
 created: 2026-08-22
 updated: 2026-08-22
 archived_at: null

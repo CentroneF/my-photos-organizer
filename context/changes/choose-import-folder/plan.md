@@ -134,10 +134,10 @@ No catalogue migration is required. The latest import-source pointer is new, app
 
 #### Automated
 
-- [ ] 1.1 Add native import-source validation, persistence, commands, and safety tests
-- [ ] 1.2 Add the library-home import-source picker and remembered/stale UI states
-- [ ] 1.3 Verify workspace tests, compilation, and no-source-mutation guarantees
+- [x] 1.1 Add native import-source validation, persistence, commands, and safety tests
+- [x] 1.2 Add the library-home import-source picker and remembered/stale UI states
+- [x] 1.3 Verify workspace tests, compilation, and no-source-mutation guarantees
 
 #### Manual
 
-- [ ] 1.4 Confirm selection, restart persistence, safe managed-library rejection, and stale-source recovery in the desktop UI
+- [x] 1.4 Confirm selection, restart persistence, safe managed-library rejection, and stale-source recovery in the desktop UI
