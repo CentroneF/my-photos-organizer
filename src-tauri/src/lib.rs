@@ -14,14 +14,20 @@ fn setup_library(
 ) -> Result<library::SetupLibraryResult, library::SetupLibraryError> {
     use tauri::Manager;
 
-    let result = library::setup_library(request)?;
+    let mut result = library::setup_library(request)?;
     let app_data_dir = app.path().app_data_dir().map_err(|error| {
         library::SetupLibraryError::new(
             "settings_unavailable",
             format!("Could not access app settings: {error}"),
         )
     })?;
-    library::remember_library_path(&app_data_dir, &result.folder_path)?;
+    if let Err(error) = library::remember_library_path(&app_data_dir, &result.folder_path) {
+        result.message = format!(
+            "{} The library was created, but its location could not be remembered ({error_message}). Open the existing library manually next time.",
+            result.message,
+            error_message = error.message
+        );
+    }
     Ok(result)
 }
 
@@ -90,14 +96,20 @@ fn reset_library_password(
     use tauri::Manager;
 
     let folder_path = request.folder_path.clone();
-    let result = library::reset_library_password(&folder_path, request)?;
+    let mut result = library::reset_library_password(&folder_path, request)?;
     let app_data_dir = app.path().app_data_dir().map_err(|error| {
         library::SetupLibraryError::new(
             "settings_unavailable",
             format!("Could not access app settings: {error}"),
         )
     })?;
-    library::remember_library_path(&app_data_dir, &folder_path)?;
+    if let Err(error) = library::remember_library_path(&app_data_dir, &folder_path) {
+        result.message = format!(
+            "{} The password was reset, but this library location could not be remembered ({error_message}). Open the existing library manually next time.",
+            result.message,
+            error_message = error.message
+        );
+    }
     Ok(result)
 }
 

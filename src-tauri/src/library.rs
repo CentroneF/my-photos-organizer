@@ -145,8 +145,9 @@ pub fn setup_library(
     validate_empty_writable_folder(&folder)?;
 
     let state_dir = folder.join(STATE_DIR);
+    let temporary_state_dir = folder.join(format!("{STATE_DIR}.pending-{}", random_suffix()));
     // State is created only after the selected folder has passed every non-mutating check.
-    fs::create_dir(&state_dir).map_err(|error| {
+    fs::create_dir(&temporary_state_dir).map_err(|error| {
         SetupLibraryError::new(
             "folder_not_writable",
             format!("Photo Handler could not create its state folder: {error}"),
@@ -162,22 +163,28 @@ pub fn setup_library(
             recovery_wrap: wrap_key(&database_key, &request.recovery_answer)?,
             recovery_question: request.recovery_question.trim().to_owned(),
         };
-        initialize_catalogue(&state_dir.join(DATABASE_FILE), &database_key)?;
+        initialize_catalogue(&temporary_state_dir.join(DATABASE_FILE), &database_key)?;
         let marker_json = serde_json::to_vec_pretty(&marker)
             .map_err(|error| SetupLibraryError::new("initialization_failed", error.to_string()))?;
-        fs::write(state_dir.join(MARKER_FILE), marker_json).map_err(|error| {
+        fs::write(temporary_state_dir.join(MARKER_FILE), marker_json).map_err(|error| {
             SetupLibraryError::new(
                 "initialization_failed",
                 format!("Could not write library marker: {error}"),
             )
         })?;
         database_key.fill(0);
+        fs::rename(&temporary_state_dir, &state_dir).map_err(|error| {
+            SetupLibraryError::new(
+                "initialization_failed",
+                format!("Could not publish protected library state: {error}"),
+            )
+        })?;
         Ok(())
     })();
 
     if let Err(error) = initialization {
         // This directory was created by this invocation, so cleanup never affects user content.
-        let _ = fs::remove_dir_all(&state_dir);
+        let _ = fs::remove_dir_all(&temporary_state_dir);
         return Err(error);
     }
 
@@ -236,12 +243,29 @@ pub fn remember_library_path(app_data_dir: &Path, folder: &str) -> Result<(), Se
         )
     })?;
     let pointer = serde_json::json!({ "format_version": FORMAT_VERSION, "folder_path": folder });
-    fs::write(app_data_dir.join(LIBRARY_POINTER_FILE), pointer.to_string()).map_err(|error| {
+    let temporary_pointer = app_data_dir.join(format!(
+        "{LIBRARY_POINTER_FILE}.pending-{}",
+        random_suffix()
+    ));
+    fs::write(&temporary_pointer, pointer.to_string()).map_err(|error| {
+        SetupLibraryError::new(
+            "settings_unavailable",
+            format!("Could not save the selected library: {error}"),
+        )
+    })?;
+    fs::rename(&temporary_pointer, app_data_dir.join(LIBRARY_POINTER_FILE)).map_err(|error| {
+        let _ = fs::remove_file(&temporary_pointer);
         SetupLibraryError::new(
             "settings_unavailable",
             format!("Could not save the selected library: {error}"),
         )
     })
+}
+
+fn random_suffix() -> String {
+    let mut bytes = [0_u8; 16];
+    OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
 }
 
 pub fn read_remembered_library_path(app_data_dir: &Path) -> Result<String, SetupLibraryError> {
@@ -566,24 +590,57 @@ fn validate_catalogue(
     connection
         .pragma_update(None, "key", format!("x'{}'", hex::encode(database_key)))
         .map_err(|_| incorrect_credential_error())?;
-    let version: u32 = connection
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|_| incorrect_credential_error())?;
+    let version: u32 = transaction
         .query_row("SELECT version FROM schema_migrations LIMIT 1", [], |row| {
             row.get(0)
         })
         .map_err(|_| incorrect_credential_error())?;
-    let identity_version: u32 = connection
+    let identity_version: u32 = transaction
         .query_row(
             "SELECT format_version FROM library_identity WHERE id = 1",
             [],
             |row| row.get(0),
         )
         .map_err(|_| incorrect_credential_error())?;
-    if version != FORMAT_VERSION || identity_version != FORMAT_VERSION {
+    if version != identity_version || version > FORMAT_VERSION {
         return Err(SetupLibraryError::new(
             "library_version_unsupported",
             "This Photo Handler library uses an unsupported schema version.",
         ));
     }
+    if version == 0 {
+        transaction
+            .execute(
+                "UPDATE schema_migrations SET version = ?1",
+                [FORMAT_VERSION],
+            )
+            .map_err(|_| {
+                SetupLibraryError::new(
+                    "library_migration_failed",
+                    "Could not migrate the protected library catalogue.",
+                )
+            })?;
+        transaction
+            .execute(
+                "UPDATE library_identity SET format_version = ?1 WHERE id = 1",
+                [FORMAT_VERSION],
+            )
+            .map_err(|_| {
+                SetupLibraryError::new(
+                    "library_migration_failed",
+                    "Could not migrate the protected library catalogue.",
+                )
+            })?;
+    }
+    transaction.commit().map_err(|_| {
+        SetupLibraryError::new(
+            "library_migration_failed",
+            "Could not migrate the protected library catalogue.",
+        )
+    })?;
     Ok(())
 }
 
@@ -730,6 +787,27 @@ mod tests {
         }
     }
 
+    fn update_catalogue_versions(path: &Path, version: u32) {
+        let marker: LibraryMarker =
+            serde_json::from_slice(&fs::read(path.join(STATE_DIR).join(MARKER_FILE)).unwrap())
+                .unwrap();
+        let mut key = unwrap_key(&marker.password_wrap, "correct horse battery staple").unwrap();
+        let connection = Connection::open(path.join(STATE_DIR).join(DATABASE_FILE)).unwrap();
+        connection
+            .pragma_update(None, "key", format!("x'{}'", hex::encode(key)))
+            .unwrap();
+        connection
+            .execute("UPDATE schema_migrations SET version = ?1", [version])
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE library_identity SET format_version = ?1 WHERE id = 1",
+                [version],
+            )
+            .unwrap();
+        key.fill(0);
+    }
+
     #[test]
     fn correct_password_reopens_the_same_library() {
         let directory = tempdir().unwrap();
@@ -799,6 +877,55 @@ mod tests {
             unlock_request("new password")
         )
         .is_ok());
+    }
+
+    #[test]
+    fn unlock_migrates_a_supported_older_catalogue_schema() {
+        let directory = tempdir().unwrap();
+        setup_library(request(directory.path())).unwrap();
+        update_catalogue_versions(directory.path(), 0);
+
+        unlock_library(
+            &directory.path().display().to_string(),
+            unlock_request("correct horse battery staple"),
+        )
+        .unwrap();
+
+        let marker: LibraryMarker = serde_json::from_slice(
+            &fs::read(directory.path().join(STATE_DIR).join(MARKER_FILE)).unwrap(),
+        )
+        .unwrap();
+        let mut key = unwrap_key(&marker.password_wrap, "correct horse battery staple").unwrap();
+        let connection =
+            Connection::open(directory.path().join(STATE_DIR).join(DATABASE_FILE)).unwrap();
+        connection
+            .pragma_update(None, "key", format!("x'{}'", hex::encode(key)))
+            .unwrap();
+        let version: u32 = connection
+            .query_row("SELECT version FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        key.fill(0);
+        assert_eq!(version, FORMAT_VERSION);
+    }
+
+    #[test]
+    fn newer_catalogue_schema_is_rejected_without_mutation() {
+        let directory = tempdir().unwrap();
+        setup_library(request(directory.path())).unwrap();
+        update_catalogue_versions(directory.path(), FORMAT_VERSION + 1);
+        let database = directory.path().join(STATE_DIR).join(DATABASE_FILE);
+        let before = fs::read(&database).unwrap();
+
+        let error = unlock_library(
+            &directory.path().display().to_string(),
+            unlock_request("correct horse battery staple"),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "library_version_unsupported");
+        assert_eq!(fs::read(database).unwrap(), before);
     }
 
     #[test]

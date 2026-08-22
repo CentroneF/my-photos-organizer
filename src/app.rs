@@ -224,6 +224,12 @@ pub fn App() -> Element {
     let choose_another = move |_| {
         step.set("folder".into());
         folder.set(String::new());
+        password.set(String::new());
+        confirmation.set(String::new());
+        question.set(String::new());
+        answer.set(String::new());
+        new_password.set(String::new());
+        new_confirmation.set(String::new());
         error.set(String::new());
     };
 
@@ -259,6 +265,7 @@ pub fn App() -> Element {
                 Ok(created) => {
                     password.set(String::new());
                     confirmation.set(String::new());
+                    question.set(String::new());
                     answer.set(String::new());
                     success.set(Some(created));
                     step.set("complete".into());
