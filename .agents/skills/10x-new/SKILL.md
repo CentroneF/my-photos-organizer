@@ -67,7 +67,33 @@ Before creating anything:
 
 3. **`context/changes/` parent exists**: if missing, print `error: context/changes/ not found — is this repo set up for the 10x context structure?` and STOP. (Do NOT auto-create the parent; that's a sign the repo isn't ready.)
 
+## Branch preflight and setup
+
+After structural validation succeeds and **before creating a folder or `change.md`**, establish the branch for `<change-id>`. This stage is all-or-nothing with respect to change-record creation: any Git failure stops the skill and no new `context/changes/<change-id>/` folder may be written.
+
+1. **Already-checked-out no-op**: run `git branch --show-current`. If its output is exactly `<change-id>`, do not fetch, switch, create, push, or change upstream. Continue directly to **Creation**; the normal folder validation has already protected against an existing change record.
+
+2. **Fetch the base**: otherwise run `git fetch origin main`. If it fails, report the Git error and STOP. Do not create a change folder.
+
+3. **Check both branch namespaces**: check for `refs/heads/<change-id>` locally and `refs/heads/<change-id>` on `origin` (for example, `git show-ref --verify --quiet refs/heads/<change-id>` and `git ls-remote --exit-code --heads origin refs/heads/<change-id>`).
+   - Treat a missing remote ref as available only when the lookup completed successfully and reported no matching ref. If the remote lookup itself fails, report the Git error and STOP; do not assume the name is free.
+   - If either namespace contains the requested name, do not switch to, reset, move, reuse, or publish that branch. Find the first suffix beginning at `<change-id>-2` that is free in **both** namespaces, checking each candidate the same way.
+   - Propose that verified candidate and ask the user to confirm it. Never select an alternate automatically. On confirmation, replace `<change-id>` with the confirmed ID (retaining the parsed intent) and restart at **Validation**. On rejection or no confirmation, STOP without creating a folder.
+
+4. **Create and publish the branch**: create and check out the branch from the freshly fetched base without inheriting `origin/main` as its upstream:
+
+```bash
+git switch --no-track -c <change-id> origin/main
+git push -u origin <change-id>
+```
+
+If either command fails, report the Git error and STOP before **Creation**. Do not attempt cleanup by resetting, moving, or reusing branches. In particular, a feature branch must **never** track `origin/main`; only the same-named remote branch is valid.
+
+5. **Verify the result**: confirm `git branch --show-current` returns `<change-id>` and `git rev-parse --abbrev-ref --symbolic-full-name @{upstream}` returns `origin/<change-id>`. If either check fails, report the mismatch and STOP before **Creation**.
+
 ## Creation
+
+Enter this stage only after the branch preflight/setup succeeded or the already-checked-out no-op applied.
 
 1. Create directory `context/changes/<change-id>/`.
 2. Derive the `<title>`:
@@ -99,7 +125,7 @@ See `reference/change-md.md` for the full schema reference (allowed status value
 
 ## Next-step suggestion
 
-After successful creation, print a next-step prompt and copy the suggested command to clipboard.
+After successful creation, print a next-step prompt and copy the suggested command to clipboard. Also report the checked-out local branch and its `origin/<change-id>` upstream.
 
 The default next step is `/10x-plan <change-id>` — most changes go straight to planning. The other two skills are situational: `/10x-research` when the parsed intent (or the surrounding turn) suggests the change requires meaningful codebase exploration before a plan can be written, and `/10x-frame` when the intent signals that the framing is suspect — either bug-shape ("fix", "bug", "broken", "why is", "root cause", "regression", "self-diagnosed solution") or scope/design-shape ("should we even", "is this the right", "what's actually broken", "rethink", "challenge the assumption"). Pick the situational option only when the signal is clear; otherwise default to `/10x-plan`.
 
@@ -117,6 +143,7 @@ Then display:
 
 ```
 ✓ Created context/changes/<change-id>/change.md (status: new)
+✓ On branch <change-id> tracking origin/<change-id>
 
 Next step:
   → <NEXT_CMD>  (✓ copied to clipboard)
@@ -134,3 +161,19 @@ If no clipboard tool is available (`pbcopy`, `clip.exe`, `xclip`, `Set-Clipboard
 - Does not write to any state-file sidecar; the `## Progress` section in `plan.md` is the single source of truth for execution state.
 - Does not enforce status transitions — `change.md` is record-only.
 - Does not create the `context/changes/` parent directory; if it's missing, the repo isn't bootstrapped for this structure and the user should resolve that first.
+
+## Verification guidance
+
+In a disposable repository with a reachable bare `origin`, verify the following matrix before changing this workflow:
+
+| Scenario | Expected result |
+| --- | --- |
+| Fresh ID | Fetches `origin/main`, creates `<change-id>` with `--no-track`, publishes it, verifies upstream `origin/<change-id>`, then writes `change.md`. |
+| Current branch already matches | Makes no Git mutation and proceeds with the normal change-folder workflow. |
+| Local collision | Proposes a verified free `-2` (or later) candidate and requires confirmation; writes no requested change folder. |
+| Remote collision | Proposes a verified free `-2` (or later) candidate and requires confirmation; writes no requested change folder. |
+| Fetch failure | Stops before creating a change folder. |
+| Branch-creation failure | Stops before creating a change folder. |
+| Push or upstream-verification failure | Stops before creating a change folder. |
+
+For the fresh path, inspect both `git branch --show-current` and `git rev-parse --abbrev-ref --symbolic-full-name @{upstream}`. The latter must be `origin/<change-id>`, never `origin/main`.
