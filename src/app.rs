@@ -69,6 +69,56 @@ struct CommandError {
     message: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RememberedLibrary {
+    state: String,
+    folder_path: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryQuestion {
+    question: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UnlockRequest<'a> {
+    password: &'a str,
+}
+
+#[derive(Serialize)]
+struct UnlockInvokeArgs<'a> {
+    request: UnlockRequest<'a>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenExistingRequest<'a> {
+    folder_path: &'a str,
+    password: &'a str,
+}
+
+#[derive(Serialize)]
+struct OpenExistingInvokeArgs<'a> {
+    request: OpenExistingRequest<'a>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResetRequest<'a> {
+    folder_path: &'a str,
+    recovery_answer: &'a str,
+    new_password: &'a str,
+    new_password_confirmation: &'a str,
+}
+
+#[derive(Serialize)]
+struct ResetInvokeArgs<'a> {
+    request: ResetRequest<'a>,
+}
+
 fn command_error(value: JsValue, fallback: &str) -> String {
     serde_wasm_bindgen::from_value::<CommandError>(value)
         .map(|error| error.message)
@@ -76,7 +126,7 @@ fn command_error(value: JsValue, fallback: &str) -> String {
 }
 
 pub fn App() -> Element {
-    let mut step = use_signal(|| "folder".to_owned());
+    let mut step = use_signal(|| "loading".to_owned());
     let mut folder = use_signal(String::new);
     let mut password = use_signal(String::new);
     let mut confirmation = use_signal(String::new);
@@ -85,6 +135,39 @@ pub fn App() -> Element {
     let mut error = use_signal(String::new);
     let mut success = use_signal(|| None::<SetupResult>);
     let mut busy = use_signal(|| false);
+    let mut recovery_question = use_signal(String::new);
+    let mut show_recovery = use_signal(|| false);
+    let mut new_password = use_signal(String::new);
+    let mut new_confirmation = use_signal(String::new);
+
+    use_effect(move || {
+        spawn(async move {
+            match invoke("remembered_library", JsValue::NULL).await {
+                Ok(value) => match serde_wasm_bindgen::from_value::<RememberedLibrary>(value) {
+                    Ok(remembered) => {
+                        if let Some(path) = remembered.folder_path {
+                            folder.set(path);
+                        }
+                        step.set(
+                            match remembered.state.as_str() {
+                                "ready" => "unlock",
+                                "stale" => "stale",
+                                _ => "folder",
+                            }
+                            .to_owned(),
+                        );
+                    }
+                    Err(_) => {
+                        error.set("Could not read the remembered library.".into());
+                        step.set("folder".into());
+                    }
+                },
+                Err(_) => {
+                    step.set("folder".into());
+                }
+            }
+        });
+    });
 
     let choose_folder = move |_| async move {
         error.set(String::new());
@@ -186,6 +269,119 @@ pub fn App() -> Element {
         }
     };
 
+    let unlock = move |event: FormEvent| async move {
+        event.prevent_default();
+        error.set(String::new());
+        busy.set(true);
+        let selected_folder = folder();
+        let entered_password = password();
+        let result = if selected_folder.is_empty() {
+            serde_wasm_bindgen::to_value(&UnlockInvokeArgs {
+                request: UnlockRequest {
+                    password: &entered_password,
+                },
+            })
+            .map_err(|_| JsValue::NULL)
+            .and_then(|args| Ok(args))
+        } else {
+            serde_wasm_bindgen::to_value(&OpenExistingInvokeArgs {
+                request: OpenExistingRequest {
+                    folder_path: &selected_folder,
+                    password: &entered_password,
+                },
+            })
+            .map_err(|_| JsValue::NULL)
+            .and_then(|args| Ok(args))
+        };
+        let result = match result {
+            Ok(args) => {
+                if selected_folder.is_empty() {
+                    invoke("unlock_library", args).await
+                } else {
+                    invoke("open_existing_library", args).await
+                }
+            }
+            Err(_) => Err(JsValue::NULL),
+        };
+        busy.set(false);
+        match result {
+            Ok(value) => match serde_wasm_bindgen::from_value::<SetupResult>(value) {
+                Ok(result) => {
+                    password.set(String::new());
+                    success.set(Some(result));
+                    step.set("complete".into());
+                }
+                Err(_) => error.set("Unlock returned an unexpected response.".into()),
+            },
+            Err(value) => error.set(command_error(value, "The library could not be unlocked.")),
+        }
+    };
+
+    let begin_recovery = move |_| async move {
+        error.set(String::new());
+        busy.set(true);
+        let selected_folder = folder();
+        let result = match serde_wasm_bindgen::to_value(&FolderInvokeArgs {
+            request: FolderRequest {
+                folder_path: &selected_folder,
+            },
+        }) {
+            Ok(args) => invoke("recovery_question", args).await,
+            Err(_) => Err(JsValue::NULL),
+        };
+        busy.set(false);
+        match result {
+            Ok(value) => match serde_wasm_bindgen::from_value::<RecoveryQuestion>(value) {
+                Ok(result) => {
+                    recovery_question.set(result.question);
+                    show_recovery.set(true);
+                    password.set(String::new());
+                }
+                Err(_) => error.set("Could not read the recovery question.".into()),
+            },
+            Err(value) => error.set(command_error(
+                value,
+                "Recovery is unavailable for this library.",
+            )),
+        }
+    };
+
+    let reset_password = move |event: FormEvent| async move {
+        event.prevent_default();
+        error.set(String::new());
+        busy.set(true);
+        let answer_value = answer();
+        let next_password = new_password();
+        let next_confirmation = new_confirmation();
+        let selected_folder = folder();
+        let result = match serde_wasm_bindgen::to_value(&ResetInvokeArgs {
+            request: ResetRequest {
+                folder_path: &selected_folder,
+                recovery_answer: &answer_value,
+                new_password: &next_password,
+                new_password_confirmation: &next_confirmation,
+            },
+        }) {
+            Ok(args) => invoke("reset_library_password", args).await,
+            Err(_) => Err(JsValue::NULL),
+        };
+        busy.set(false);
+        match result {
+            Ok(value) => match serde_wasm_bindgen::from_value::<SetupResult>(value) {
+                Ok(result) => {
+                    answer.set(String::new());
+                    new_password.set(String::new());
+                    new_confirmation.set(String::new());
+                    show_recovery.set(false);
+                    success.set(Some(result));
+                    step.set("complete".into());
+                }
+                Err(_) => error.set("Password reset returned an unexpected response.".into()),
+            },
+            Err(value) => error.set(command_error(value, "The recovery answer is incorrect.")),
+        }
+    };
+
     let step_one_class = if step() == "folder" {
         "progress-dot active"
     } else {
@@ -232,6 +428,10 @@ pub fn App() -> Element {
                             span { strong { if busy() { "Inspecting folder…" } else { "Choose a folder" } } small { "Empty folder or an existing Photo Handler library" } }
                             span { class: "arrow", "→" }
                         }
+                    } else if step() == "loading" {
+                        p { class: "step-label", "STARTING" }
+                        h2 { "Finding your protected library…" }
+                        p { class: "lede", "We are checking only the remembered local library location." }
                     } else if step() == "new" {
                         p { class: "step-label", "STEP 2 OF 2" }
                         h2 { "Protect your new library" }
@@ -248,12 +448,44 @@ pub fn App() -> Element {
                             if !error().is_empty() { p { class: "error-message", role: "alert", "{error}" } }
                             button { class: "primary-button", r#type: "submit", disabled: busy(), if busy() { "Creating protected library…" } else { "Create protected library" } }
                         }
-                    } else if step() == "existing" {
+                    } else if step() == "unlock" || step() == "existing" {
                         p { class: "step-label", "LIBRARY FOUND" }
-                        h2 { "This folder is already configured." }
-                        p { class: "lede", "We found a protected Photo Handler catalogue and left it unchanged. Unlocking existing libraries arrives in the next setup phase." }
-                        div { class: "folder-summary", span { "Existing library" } strong { "{folder}" } }
-                        button { class: "secondary-button", r#type: "button", onclick: choose_another, "Choose another folder" }
+                        h2 { "Unlock your protected library" }
+                        p { class: "lede", "Your encrypted catalogue is ready. Original media stays exactly where it is." }
+                        div { class: "folder-summary",
+                            div { class: "folder-summary-heading",
+                                span { "Existing library" }
+                                button { r#type: "button", onclick: choose_another, "Open another" }
+                            }
+                            strong { "{folder}" }
+                        }
+                        if show_recovery() {
+                            form { class: "setup-form", onsubmit: reset_password,
+                                label { "Recovery question" input { value: "{recovery_question}", readonly: true } }
+                                label { "Recovery answer" input { r#type: "password", autocomplete: "off", value: "{answer}", oninput: move |event| answer.set(event.value()) } }
+                                div { class: "field-pair",
+                                    label { "New password" input { r#type: "password", autocomplete: "new-password", value: "{new_password}", oninput: move |event| new_password.set(event.value()) } }
+                                    label { "Confirm new password" input { r#type: "password", autocomplete: "new-password", value: "{new_confirmation}", oninput: move |event| new_confirmation.set(event.value()) } }
+                                }
+                                p { class: "privacy-note", "Recovery is local only. There is no email or cloud reset." }
+                                if !error().is_empty() { p { class: "error-message", role: "alert", "{error}" } }
+                                button { class: "primary-button", r#type: "submit", disabled: busy(), if busy() { "Resetting password…" } else { "Reset password" } }
+                                button { class: "secondary-button", r#type: "button", onclick: move |_| { show_recovery.set(false); answer.set(String::new()); new_password.set(String::new()); new_confirmation.set(String::new()); }, "Cancel recovery" }
+                            }
+                        } else {
+                            form { class: "setup-form", onsubmit: unlock,
+                                label { "Password" input { r#type: "password", autocomplete: "current-password", value: "{password}", oninput: move |event| password.set(event.value()) } }
+                                if !error().is_empty() { p { class: "error-message", role: "alert", "{error}" } }
+                                button { class: "primary-button", r#type: "submit", disabled: busy(), if busy() { "Unlocking…" } else { "Unlock library" } }
+                                button { class: "secondary-button", r#type: "button", onclick: begin_recovery, disabled: busy(), "Use local recovery" }
+                            }
+                        }
+                    } else if step() == "stale" {
+                        p { class: "step-label", "LIBRARY UNAVAILABLE" }
+                        h2 { "Your remembered library is unavailable." }
+                        p { class: "lede", "It may have moved or be offline. Choose it again; Photo Handler will only open a recognized library after its password is valid." }
+                        if !folder().is_empty() { div { class: "folder-summary", span { "Remembered location" } strong { "{folder}" } } }
+                        button { class: "primary-button", r#type: "button", onclick: choose_another, "Open existing library" }
                     } else if let Some(created) = &*success.read() {
                         p { class: "step-label success-label", "READY" }
                         div { class: "success-icon", "✓" }
@@ -262,7 +494,7 @@ pub fn App() -> Element {
                         div { class: "folder-summary", span { "Library folder" } strong { "{created.folder_path}" } }
                     }
 
-                    if !error().is_empty() && step() == "folder" { p { class: "error-message", role: "alert", "{error}" } }
+                    if !error().is_empty() && (step() == "folder" || step() == "stale") { p { class: "error-message", role: "alert", "{error}" } }
                 }
             }
         }

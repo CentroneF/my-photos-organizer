@@ -25,6 +25,82 @@ fn setup_library(
     Ok(result)
 }
 
+#[tauri::command]
+fn remembered_library(
+    app: tauri::AppHandle,
+) -> Result<library::RememberedLibraryResult, library::SetupLibraryError> {
+    use tauri::Manager;
+
+    let app_data_dir = app.path().app_data_dir().map_err(|error| {
+        library::SetupLibraryError::new(
+            "settings_unavailable",
+            format!("Could not access app settings: {error}"),
+        )
+    })?;
+    library::remembered_library(&app_data_dir)
+}
+
+#[tauri::command]
+fn unlock_library(
+    app: tauri::AppHandle,
+    request: library::UnlockLibraryRequest,
+) -> Result<library::UnlockLibraryResult, library::SetupLibraryError> {
+    use tauri::Manager;
+
+    let app_data_dir = app.path().app_data_dir().map_err(|error| {
+        library::SetupLibraryError::new(
+            "settings_unavailable",
+            format!("Could not access app settings: {error}"),
+        )
+    })?;
+    let folder_path = library::read_remembered_library_path(&app_data_dir)?;
+    library::unlock_library(&folder_path, request)
+}
+
+#[tauri::command]
+fn open_existing_library(
+    app: tauri::AppHandle,
+    request: library::OpenExistingLibraryRequest,
+) -> Result<library::UnlockLibraryResult, library::SetupLibraryError> {
+    use tauri::Manager;
+
+    let app_data_dir = app.path().app_data_dir().map_err(|error| {
+        library::SetupLibraryError::new(
+            "settings_unavailable",
+            format!("Could not access app settings: {error}"),
+        )
+    })?;
+    let result = library::unlock_library(&request.folder_path, request.unlock)?;
+    library::remember_library_path(&app_data_dir, &result.folder_path)?;
+    Ok(result)
+}
+
+#[tauri::command]
+fn recovery_question(
+    request: library::RecoveryQuestionRequest,
+) -> Result<library::RecoveryQuestionResult, library::SetupLibraryError> {
+    library::recovery_question(&request.folder_path)
+}
+
+#[tauri::command]
+fn reset_library_password(
+    app: tauri::AppHandle,
+    request: library::ResetLibraryPasswordRequest,
+) -> Result<library::UnlockLibraryResult, library::SetupLibraryError> {
+    use tauri::Manager;
+
+    let folder_path = request.folder_path.clone();
+    let result = library::reset_library_password(&folder_path, request)?;
+    let app_data_dir = app.path().app_data_dir().map_err(|error| {
+        library::SetupLibraryError::new(
+            "settings_unavailable",
+            format!("Could not access app settings: {error}"),
+        )
+    })?;
+    library::remember_library_path(&app_data_dir, &folder_path)?;
+    Ok(result)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -32,7 +108,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             inspect_library_folder,
-            setup_library
+            setup_library,
+            remembered_library,
+            unlock_library,
+            open_existing_library,
+            recovery_question,
+            reset_library_password
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

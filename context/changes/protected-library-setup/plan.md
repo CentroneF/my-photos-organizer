@@ -184,22 +184,22 @@ The initial database schema must include a version record and apply migrations t
 
 #### Automated
 
-- [x] 1.1 Add native protected-library setup, encrypted catalogue initialization, and safety tests
-- [x] 1.2 Add the first-run folder, password, and recovery setup screen
-- [x] 1.3 Verify workspace tests, compilation, and setup no-mutation guarantees
+- [x] 1.1 Add native protected-library setup, encrypted catalogue initialization, and safety tests — a26991a
+- [x] 1.2 Add the first-run folder, password, and recovery setup screen — a26991a
+- [x] 1.3 Verify workspace tests, compilation, and setup no-mutation guarantees — a26991a
 
 #### Manual
 
-- [x] 1.4 Confirm protected-library creation and safe rejected-folder behavior in the desktop UI
+- [x] 1.4 Confirm protected-library creation and safe rejected-folder behavior in the desktop UI — a26991a
 
 ### Phase 2: Reopen, unlock, and recover the library
 
 #### Automated
 
-- [ ] 2.1 Add native reopen, unlock, recovery, and lifecycle safety behavior with tests
-- [ ] 2.2 Add returning-user unlock, recovery, and existing-library UI states
-- [ ] 2.3 Verify workspace tests, compilation, and rejected-path preservation guarantees
+- [x] 2.1 Add native reopen, unlock, recovery, and lifecycle safety behavior with tests
+- [x] 2.2 Add returning-user unlock, recovery, and existing-library UI states
+- [x] 2.3 Verify workspace tests, compilation, and rejected-path preservation guarantees
 
 #### Manual
 
-- [ ] 2.4 Confirm restart unlock, local recovery, and safe stale/foreign-library behavior in the desktop UI
+- [x] 2.4 Confirm restart unlock, local recovery, and safe stale/foreign-library behavior in the desktop UI

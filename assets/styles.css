@@ -47,6 +47,8 @@ button:disabled { cursor: wait; opacity: .65; }
 .folder-summary span { color: #79776f; font-size: .7rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .folder-summary strong { overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .82rem; }
 .folder-summary button { position: absolute; top: 50%; right: 1rem; transform: translateY(-50%); padding: .35rem; border: 0; color: #5b55a5; background: transparent; font-size: .78rem; font-weight: 800; }
+.folder-summary-heading { display: flex; align-items: center; gap: .65rem; }
+.folder-summary-heading button { position: static; transform: none; padding: 0; }
 .setup-form { display: grid; gap: 1rem; }
 .field-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 .setup-form label { display: grid; gap: .45rem; color: #3f4559; font-size: .78rem; font-weight: 800; }
