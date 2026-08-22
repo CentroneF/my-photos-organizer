@@ -1,4 +1,38 @@
+mod import_source;
 mod library;
+
+#[tauri::command]
+fn save_import_source(
+    app: tauri::AppHandle,
+    request: import_source::SaveImportSourceRequest,
+) -> Result<import_source::ImportSourceResult, import_source::ImportSourceError> {
+    use tauri::Manager;
+
+    let app_data_dir = app.path().app_data_dir().map_err(|error| {
+        import_source::ImportSourceError::new(
+            "settings_unavailable",
+            format!("Could not access app settings: {error}"),
+        )
+    })?;
+    let managed_library_path = library::read_remembered_library_path(&app_data_dir)
+        .map_err(|error| import_source::ImportSourceError::new(error.code, error.message))?;
+    import_source::save_import_source(&app_data_dir, &managed_library_path, request)
+}
+
+#[tauri::command]
+fn remembered_import_source(
+    app: tauri::AppHandle,
+) -> Result<import_source::ImportSourceResult, import_source::ImportSourceError> {
+    use tauri::Manager;
+
+    let app_data_dir = app.path().app_data_dir().map_err(|error| {
+        import_source::ImportSourceError::new(
+            "settings_unavailable",
+            format!("Could not access app settings: {error}"),
+        )
+    })?;
+    import_source::remembered_import_source(&app_data_dir)
+}
 
 #[tauri::command]
 fn inspect_library_folder(
@@ -120,6 +154,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             inspect_library_folder,
+            save_import_source,
+            remembered_import_source,
             setup_library,
             remembered_library,
             unlock_library,
