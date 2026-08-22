@@ -196,10 +196,10 @@ The initial database schema must include a version record and apply migrations t
 
 #### Automated
 
-- [x] 2.1 Add native reopen, unlock, recovery, and lifecycle safety behavior with tests
-- [x] 2.2 Add returning-user unlock, recovery, and existing-library UI states
-- [x] 2.3 Verify workspace tests, compilation, and rejected-path preservation guarantees
+- [x] 2.1 Add native reopen, unlock, recovery, and lifecycle safety behavior with tests — 3c86ab1
+- [x] 2.2 Add returning-user unlock, recovery, and existing-library UI states — 3c86ab1
+- [x] 2.3 Verify workspace tests, compilation, and rejected-path preservation guarantees — 3c86ab1
 
 #### Manual
 
-- [x] 2.4 Confirm restart unlock, local recovery, and safe stale/foreign-library behavior in the desktop UI
+- [x] 2.4 Confirm restart unlock, local recovery, and safe stale/foreign-library behavior in the desktop UI — 3c86ab1
