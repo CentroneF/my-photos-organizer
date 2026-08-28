@@ -1,7 +1,7 @@
 ---
 change_id: review-and-decide-media
 title: Review and decide media
-status: implementing
+status: implemented
 created: 2026-08-28
 updated: 2026-08-28
 archived_at: null

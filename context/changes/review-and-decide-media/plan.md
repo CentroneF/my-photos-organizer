@@ -257,9 +257,9 @@ Advance the catalogue schema version transactionally from the existing version-1
 
 #### Automated
 
-- [x] 3.1 Add completion/recovery state and lifecycle regression coverage
-- [x] 3.2 Verify workspace tests, compilation, full lifecycle, and no partial-import/source-mutation failures
+- [x] 3.1 Add completion/recovery state and lifecycle regression coverage — 7ebb2f0
+- [x] 3.2 Verify workspace tests, compilation, full lifecycle, and no partial-import/source-mutation failures — 7ebb2f0
 
 #### Manual
 
-- [x] 3.3 Confirm completion counts, lock/reopen resume, folder switching, and platform playback fallback behavior
+- [x] 3.3 Confirm completion counts, lock/reopen resume, folder switching, and platform playback fallback behavior — 7ebb2f0
