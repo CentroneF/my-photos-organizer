@@ -39,6 +39,17 @@ fn lock_library() {
 }
 
 #[tauri::command]
+fn open_library_folder() -> Result<(), library::SetupLibraryError> {
+    let library_path = library::active_library_path()?;
+    tauri_plugin_opener::open_path(library_path, None::<&str>).map_err(|error| {
+        library::SetupLibraryError::new(
+            "folder_open_failed",
+            format!("Could not open the protected library folder: {error}"),
+        )
+    })
+}
+
+#[tauri::command]
 fn clean_library(
     app: tauri::AppHandle,
     request: library::CleanLibraryRequest,
@@ -217,6 +228,7 @@ pub fn run() {
             skip_review_item,
             import_review_item,
             lock_library,
+            open_library_folder,
             clean_library,
             setup_library,
             remembered_library,

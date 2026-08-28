@@ -240,7 +240,6 @@ pub fn App() -> Element {
     let mut new_password = use_signal(String::new);
     let mut new_confirmation = use_signal(String::new);
     let mut clean_password = use_signal(String::new);
-    let mut show_clean_confirmation = use_signal(|| false);
 
     use_effect(move || {
         spawn(async move {
@@ -544,27 +543,23 @@ pub fn App() -> Element {
         }
     };
 
-    let lock_and_reopen = move |_| async move {
+    let open_library_folder = move |_| async move {
         error.set(String::new());
         busy.set(true);
-        let result = invoke("lock_library", JsValue::NULL).await;
+        let result = invoke("open_library_folder", JsValue::NULL).await;
         busy.set(false);
-        match result {
-            Ok(_) => {
-                password.set(String::new());
-                step.set("unlock".into());
-            }
-            Err(value) => error.set(command_error(
+        if let Err(value) = result {
+            error.set(command_error(
                 value,
-                "Could not lock the protected library.",
-            )),
+                "Could not open the protected library folder.",
+            ));
         }
     };
 
-    let cancel_clean = move |_| {
+    let return_to_home = move |_| {
         clean_password.set(String::new());
-        show_clean_confirmation.set(false);
         error.set(String::new());
+        step.set("home".into());
     };
 
     let clean_library = move |event: FormEvent| async move {
@@ -611,7 +606,7 @@ pub fn App() -> Element {
                     skipped_count: 0,
                     message: String::new(),
                 });
-                show_clean_confirmation.set(false);
+                step.set("home".into());
             }
             Err(value) => error.set(command_error(
                 value,
@@ -776,49 +771,48 @@ pub fn App() -> Element {
         }
     };
 
-    let step_one_class = if step() == "folder" {
-        "progress-dot active"
+    let is_onboarding = matches!(step().as_str(), "loading" | "folder" | "stale");
+    let shell_class = if is_onboarding {
+        "app-shell"
     } else {
-        "progress-dot done"
-    };
-    let step_two_class = if step() == "new" {
-        "progress-dot active"
-    } else if step() == "home" {
-        "progress-dot done"
-    } else {
-        "progress-dot"
+        "app-shell selected-library-workspace"
     };
     let review_date_origin = review_item()
         .date_origin
         .clone()
         .unwrap_or_else(|| "unavailable".into());
+    let flow_panel_class = if step() == "review" {
+        "flow-panel review-flow-panel"
+    } else {
+        "flow-panel"
+    };
+    let flow_wrap_class = if step() == "review" {
+        "flow-wrap review-flow-wrap"
+    } else {
+        "flow-wrap"
+    };
 
     rsx! {
         link { rel: "stylesheet", href: CSS }
-        main { class: "app-shell",
-            aside { class: "brand-panel",
+        main { class: "{shell_class}",
+            if is_onboarding {
+                aside { class: "brand-panel",
                 div { class: "brand-mark", "PH" }
                 div {
                     p { class: "eyebrow", "PHOTO HANDLER" }
                     h1 { "Your memories, indexed privately." }
                     p { class: "brand-copy", "A local catalogue that keeps every original exactly where you put it." }
                 }
-                ul { class: "trust-list",
-                    li { span { "01" } "Your files stay on this device" }
-                    li { span { "02" } "Original media is never moved" }
-                    li { span { "03" } "Your catalogue is encrypted" }
+                    ul { class: "trust-list",
+                        li { span { "01" } "Your files stay on this device" }
+                        li { span { "02" } "Original media is never moved" }
+                        li { span { "03" } "Your catalogue is encrypted" }
+                    }
                 }
             }
-            section { class: "flow-panel",
-                div { class: "flow-wrap",
-                    div { class: "progress-row",
-                        span { class: step_one_class, "1" }
-                        div { class: "progress-line" }
-                        span { class: step_two_class, "2" }
-                    }
-
+            section { class: "{flow_panel_class}",
+                div { class: "{flow_wrap_class}",
                     if step() == "folder" {
-                        p { class: "step-label", "STEP 1 OF 2" }
                         h2 { "Where should your library live?" }
                         p { class: "lede", "Start by choosing a folder. We’ll inspect it without changing anything, then guide you to the right next step." }
                         button { class: "folder-picker", r#type: "button", onclick: choose_folder, disabled: busy(),
@@ -831,7 +825,6 @@ pub fn App() -> Element {
                         h2 { "Finding your protected library…" }
                         p { class: "lede", "We are checking only the remembered local library location." }
                     } else if step() == "new" {
-                        p { class: "step-label", "STEP 2 OF 2" }
                         h2 { "Protect your new library" }
                         p { class: "lede", "This folder has no Photo Handler configuration yet. Add protection details to create one." }
                         div { class: "folder-summary", span { "Selected folder" } strong { "{folder}" } button { r#type: "button", onclick: choose_another, "Change" } }
@@ -888,8 +881,14 @@ pub fn App() -> Element {
                         p { class: "step-label success-label", "LIBRARY HOME" }
                         h2 { "Choose where to import from." }
                         p { class: "lede", "Your protected library is ready. Starting review reads supported files but never modifies your originals." }
-                        div { class: "folder-summary", span { "Protected library" } strong { "{folder}" } }
-                        button { class: "secondary-button", r#type: "button", onclick: lock_and_reopen, disabled: busy(), "Lock library" }
+                        div { class: "folder-summary protected-library-summary",
+                            span { "Protected library" }
+                            strong { "{folder}" }
+                            div { class: "folder-summary-actions",
+                                button { r#type: "button", onclick: open_library_folder, disabled: busy(), if busy() { "Opening folder…" } else { "Open folder" } }
+                            }
+                        }
+                        button { class: "secondary-button", r#type: "button", onclick: move |_| { error.set(String::new()); step.set("danger".into()); }, disabled: busy(), "Open danger zone" }
                         if import_source().state == "ready" {
                             div { class: "folder-summary",
                                 span { "Import source" }
@@ -918,23 +917,15 @@ pub fn App() -> Element {
                                 span { class: "arrow", "→" }
                             }
                         }
-                        if show_clean_confirmation() {
-                            form { class: "setup-form", onsubmit: clean_library,
-                                p { class: "step-label", "DANGER ZONE" }
-                                h3 { "Clean managed debug media" }
-                                p { class: "lede", "Eligible managed date folders will be moved to your operating system Trash. Only after every move succeeds, this clears review history and the remembered import folder. If a move fails, you can safely retry." }
-                                p { class: "privacy-note", "Original source media, .photo-handler, and unrelated content in this library are preserved." }
-                                label { "Current library password" input { r#type: "password", autocomplete: "current-password", value: "{clean_password}", oninput: move |event| clean_password.set(event.value()) } }
-                                button { class: "primary-button", r#type: "submit", disabled: busy(), if busy() { "Cleaning managed media…" } else { "Move managed copies to Trash" } }
-                                button { class: "secondary-button", r#type: "button", onclick: cancel_clean, disabled: busy(), "Cancel" }
-                            }
-                        } else {
-                            div { class: "folder-summary",
-                                span { "Debug maintenance" }
-                                strong { "Clean managed copies" }
-                                p { class: "privacy-note", "Moves only managed date folders to Trash. Originals and protected setup stay unchanged." }
-                                button { r#type: "button", onclick: move |_| { error.set(String::new()); show_clean_confirmation.set(true); }, disabled: busy(), "Open danger zone" }
-                            }
+                    } else if step() == "danger" {
+                        p { class: "step-label", "DANGER ZONE" }
+                        h2 { "Clean managed debug media" }
+                        p { class: "lede", "Eligible managed date folders will be moved to your operating system Trash. Only after every move succeeds, this clears review history and the remembered import folder. If a move fails, you can safely retry." }
+                        form { class: "setup-form", onsubmit: clean_library,
+                            p { class: "privacy-note", "Original source media, .photo-handler, and unrelated content in this library are preserved." }
+                            label { "Current library password" input { r#type: "password", autocomplete: "current-password", value: "{clean_password}", oninput: move |event| clean_password.set(event.value()) } }
+                            button { class: "primary-button", r#type: "submit", disabled: busy(), if busy() { "Cleaning managed media…" } else { "Move managed copies to Trash" } }
+                            button { class: "secondary-button", r#type: "button", onclick: return_to_home, disabled: busy(), "Back" }
                         }
                     } else if step() == "review" {
                         p { class: "step-label success-label", "SAFE MEDIA REVIEW" }
@@ -942,18 +933,24 @@ pub fn App() -> Element {
                             h2 { "Decide on this item." }
                             p { class: "lede", "Every choice is explicit. Import creates a copy; Skip leaves the original exactly where it is." }
                             div { class: "review-card",
-                                div { class: "review-context", strong { "{review_item().filename.clone().unwrap_or_default()}" } small { "{review_item().relative_path.clone().unwrap_or_default()}" } }
-                                if review_item().state == "item" {
-                                    if review_item().media_type.as_deref() == Some("video") {
-                                        video { class: "media-preview", controls: true, src: "{review_item().preview_url.clone().unwrap_or_default()}", onerror: move |_| error.set("This video cannot be played by the embedded browser. Its details remain available and it was not decided automatically; try another supported desktop codec or Skip explicitly.".into()) }
+                                div { class: "review-media-panel",
+                                    if review_item().state == "item" {
+                                        if review_item().media_type.as_deref() == Some("video") {
+                                            video { class: "media-preview", controls: true, src: "{review_item().preview_url.clone().unwrap_or_default()}", onerror: move |_| error.set("This video cannot be played by the embedded browser. Its details remain available and it was not decided automatically; try another supported desktop codec or Skip explicitly.".into()) }
+                                        } else {
+                                            img { class: "media-preview", src: "{review_item().preview_url.clone().unwrap_or_default()}", alt: "Preview of {review_item().filename.clone().unwrap_or_default()}" }
+                                        }
                                     } else {
-                                        img { class: "media-preview", src: "{review_item().preview_url.clone().unwrap_or_default()}", alt: "Preview of {review_item().filename.clone().unwrap_or_default()}" }
+                                        p { class: "error-message", role: "alert", "{review_item().message}" }
                                     }
-                                } else { p { class: "error-message", role: "alert", "{review_item().message}" } }
-                                label { class: "review-field", "Tags (comma-separated)" input { value: "{review_tags}", oninput: move |event| review_tags.set(event.value()), placeholder: "Family, summer" } }
-                                label { class: "review-field", "Import date" input { r#type: "date", value: "{import_date}", oninput: move |event| import_date.set(event.value()) } }
-                                p { class: "privacy-note", "Date source: {review_date_origin}. {review_item().message}" }
-                                div { class: "decision-actions", button { class: "secondary-button", r#type: "button", onclick: skip_item, disabled: busy(), "Skip" } button { class: "primary-button", r#type: "button", onclick: import_item, disabled: busy() || review_item().state != "item", if busy() { "Saving decision…" } else { "Import copy" } } }
+                                }
+                                div { class: "review-details",
+                                    div { class: "review-context", strong { "{review_item().filename.clone().unwrap_or_default()}" } small { "{review_item().relative_path.clone().unwrap_or_default()}" } }
+                                    label { class: "review-field", "Tags (comma-separated)" input { value: "{review_tags}", oninput: move |event| review_tags.set(event.value()), placeholder: "Family, summer" } }
+                                    label { class: "review-field", "Import date" input { r#type: "date", value: "{import_date}", oninput: move |event| import_date.set(event.value()) } }
+                                    p { class: "privacy-note", "Date source: {review_date_origin}. {review_item().message}" }
+                                    div { class: "decision-actions", button { class: "secondary-button", r#type: "button", onclick: skip_item, disabled: busy(), "Skip" } button { class: "primary-button", r#type: "button", onclick: import_item, disabled: busy() || review_item().state != "item", if busy() { "Saving decision…" } else { "Import copy" } } }
+                                }
                             }
                         } else if review_item().state == "complete" {
                             h2 { "Review complete." }
@@ -967,7 +964,6 @@ pub fn App() -> Element {
                                 button { class: "secondary-button", r#type: "button", onclick: move |_| step.set("home".into()), "Back to library home" }
                                 button { class: "primary-button", r#type: "button", onclick: move |_| step.set("home".into()), "Review another folder" }
                             }
-                            button { class: "secondary-button", r#type: "button", onclick: lock_and_reopen, disabled: busy(), "Lock and reopen later" }
                         } else {
                             h2 { "Review queue is clear." }
                             p { class: "lede", "{review_item().message}" }
@@ -978,6 +974,26 @@ pub fn App() -> Element {
                     if !error().is_empty() { p { class: "error-message", role: "alert", "{error}" } }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod review_layout_tests {
+    const STYLES: &str = include_str!("../assets/styles.css");
+
+    #[test]
+    fn review_preview_is_bounded_by_the_viewport_and_keeps_aspect_ratio() {
+        for selector in [
+            ".review-flow-panel { height: 100dvh; min-height: 0;",
+            ".review-flow-wrap { width: min(100%, 42rem); height: 100%; min-height: 0; display: flex; flex-direction: column; }",
+            ".review-card { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(18rem, 1fr);",
+            ".review-media-panel { min-width: 0; min-height: 0; display: flex;",
+            ".review-details { min-width: 0; display: flex; flex-direction: column; gap: 1rem;",
+            ".media-preview { display: block; width: 100%; max-width: 100%; height: 100%; max-height: 100%;",
+            "object-fit: contain;",
+        ] {
+            assert!(STYLES.contains(selector), "missing review layout rule: {selector}");
         }
     }
 }
