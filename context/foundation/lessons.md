@@ -36,3 +36,10 @@
 - **Problem**: The agent doesn't ask for confirmation.
 - **Rule**: Ask for confirmation of the commit message before committing.
 - **Applies to**: all
+
+## Push Every Commit
+
+- **Context**: Every time you commit something.
+- **Problem**: I might lose progress.
+- **Rule**: Every time you commit, push.
+- **Applies to**: N/A
