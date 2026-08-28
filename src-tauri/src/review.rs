@@ -9,7 +9,7 @@ use std::{
 use chrono::{DateTime, Local};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use rand::{rngs::OsRng, RngCore};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
@@ -35,6 +35,8 @@ pub struct ReviewItem {
     pub date_origin: Option<String>,
     pub tags: Vec<String>,
     pub preview_url: Option<String>,
+    pub imported_count: u64,
+    pub skipped_count: u64,
     pub message: String,
 }
 #[derive(Debug, Deserialize)]
@@ -97,8 +99,59 @@ pub fn start_review(source_path: &str) -> Result<ReviewState, ReviewError> {
             return Err(error("source_overlaps_library", "The import source must be separate from the protected library. Nothing was changed."));
         }
         let source_text = source.display().to_string();
-        if let Ok((id, count)) = connection.query_row("SELECT id, (SELECT count(*) FROM review_candidates WHERE session_id = review_sessions.id AND decision IS NULL) FROM review_sessions WHERE source_path = ?1 AND state = 'active'", [&source_text], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, u64>(1)?))) { return Ok(ReviewState { state: "resumable", source_path: Some(source_text), candidate_count: count, message: format!("Resuming the existing review session ({id}). Originals are never modified.") }); }
         let candidates = discover(&source)?;
+        if let Some((session_id, session_state)) = connection
+            .query_row(
+                "SELECT id, state FROM review_sessions WHERE source_path = ?1",
+                [&source_text],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(database_error)?
+        {
+            let transaction = connection.unchecked_transaction().map_err(database_error)?;
+            let mut additions = 0;
+            for candidate in &candidates {
+                additions += transaction
+                    .execute(
+                        "INSERT INTO review_candidates (session_id, relative_path, file_size, modified_at, media_type) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(session_id, relative_path) DO NOTHING",
+                        params![session_id, candidate.relative_path, candidate.file_size, candidate.modified_at, candidate.media_type],
+                    )
+                    .map_err(database_error)?;
+            }
+            if additions > 0 {
+                transaction
+                    .execute(
+                        "UPDATE review_sessions SET state = 'active' WHERE id = ?1",
+                        [session_id],
+                    )
+                    .map_err(database_error)?;
+            }
+            let pending_count = transaction
+                .query_row(
+                    "SELECT count(*) FROM review_candidates WHERE session_id = ?1 AND decision IS NULL",
+                    [session_id],
+                    |row| row.get::<_, u64>(0),
+                )
+                .map_err(database_error)?;
+            transaction.commit().map_err(database_error)?;
+            return Ok(ReviewState {
+                state: if pending_count > 0 {
+                    "resumable"
+                } else {
+                    "complete"
+                },
+                source_path: Some(source_text),
+                candidate_count: pending_count,
+                message: if additions > 0 {
+                    format!("Found {additions} newly added supported item(s). Previous decisions remain unchanged; originals are never modified.")
+                } else if session_state == "complete" {
+                    "This source review is complete. No new supported files were found; originals were not deleted or moved.".into()
+                } else {
+                    "Resuming the existing review session. Originals are never modified.".into()
+                },
+            });
+        }
         let transaction = connection.unchecked_transaction().map_err(database_error)?;
         transaction
             .execute(
@@ -109,6 +162,14 @@ pub fn start_review(source_path: &str) -> Result<ReviewState, ReviewError> {
         let session_id = transaction.last_insert_rowid();
         for candidate in &candidates {
             transaction.execute("INSERT INTO review_candidates (session_id, relative_path, file_size, modified_at, media_type) VALUES (?1, ?2, ?3, ?4, ?5)", params![session_id, candidate.relative_path, candidate.file_size, candidate.modified_at, candidate.media_type]).map_err(database_error)?;
+        }
+        if candidates.is_empty() {
+            transaction
+                .execute(
+                    "UPDATE review_sessions SET state = 'complete' WHERE id = ?1",
+                    [session_id],
+                )
+                .map_err(database_error)?;
         }
         transaction.commit().map_err(database_error)?;
         Ok(ReviewState {
@@ -126,10 +187,22 @@ pub fn start_review(source_path: &str) -> Result<ReviewState, ReviewError> {
 
 pub fn next_review_item(app: tauri::AppHandle) -> Result<ReviewItem, ReviewError> {
     library::with_catalogue(|connection, _| {
-        let row = connection.query_row("SELECT c.id, s.source_path, c.relative_path, c.media_type FROM review_candidates c JOIN review_sessions s ON s.id = c.session_id WHERE s.state = 'active' AND c.decision IS NULL ORDER BY s.id DESC, c.relative_path LIMIT 1", [], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)));
+        let (session_id, session_state) = match connection.query_row(
+            "SELECT id, state FROM review_sessions ORDER BY id DESC LIMIT 1",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        ) {
+            Ok(session) => session,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return completion_item(connection),
+            Err(value) => return Err(database_error(value)),
+        };
+        if session_state == "complete" {
+            return completion_item_for_session(connection, session_id);
+        }
+        let row = connection.query_row("SELECT c.id, s.source_path, c.relative_path, c.media_type FROM review_candidates c JOIN review_sessions s ON s.id = c.session_id WHERE c.session_id = ?1 AND c.decision IS NULL ORDER BY c.relative_path LIMIT 1", [session_id], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)));
         let (candidate_id, source_path, relative_path, media_type) = match row {
             Ok(row) => row,
-            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(empty_item()),
+            Err(rusqlite::Error::QueryReturnedNoRows) => return completion_item(connection),
             Err(error) => return Err(database_error(error)),
         };
         let path = Path::new(&source_path).join(&relative_path);
@@ -161,6 +234,8 @@ pub fn next_review_item(app: tauri::AppHandle) -> Result<ReviewItem, ReviewError
                     date_origin: Some(origin),
                     tags,
                     preview_url: None,
+                    imported_count: 0,
+                    skipped_count: 0,
                     message,
                 })
             }
@@ -175,6 +250,8 @@ pub fn next_review_item(app: tauri::AppHandle) -> Result<ReviewItem, ReviewError
             date_origin: Some(origin),
             tags,
             preview_url,
+            imported_count: 0,
+            skipped_count: 0,
             message:
                 "Review this item before choosing Import or Skip. Originals are never modified."
                     .into(),
@@ -224,6 +301,55 @@ pub fn import_review_item(request: ImportRequest) -> Result<DecisionResult, Revi
     })
 }
 
+fn completion_item(connection: &Connection) -> Result<ReviewItem, ReviewError> {
+    let session_id = connection
+        .query_row(
+            "SELECT id FROM review_sessions WHERE state = 'complete' ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(database_error)?;
+    match session_id {
+        Some(id) => completion_item_for_session(connection, id),
+        None => Ok(empty_item()),
+    }
+}
+
+fn completion_item_for_session(
+    connection: &Connection,
+    session_id: i64,
+) -> Result<ReviewItem, ReviewError> {
+    let result = connection.query_row(
+        "SELECT s.source_path, \
+            (SELECT count(*) FROM review_candidates WHERE session_id = s.id AND decision = 'imported'), \
+            (SELECT count(*) FROM review_candidates WHERE session_id = s.id AND decision = 'skipped') \
+         FROM review_sessions s WHERE s.id = ?1 AND s.state = 'complete'",
+        [session_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?, row.get::<_, u64>(2)?)),
+    );
+    match result {
+        Ok((source_path, imported_count, skipped_count)) => Ok(ReviewItem {
+            state: "complete",
+            candidate_id: None,
+            relative_path: None,
+            filename: None,
+            media_type: None,
+            effective_import_date: None,
+            date_origin: None,
+            tags: vec![],
+            preview_url: None,
+            imported_count,
+            skipped_count,
+            message: format!(
+                "Review complete for {source_path}. Originals were not deleted, moved, or changed."
+            ),
+        }),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(empty_item()),
+        Err(value) => Err(database_error(value)),
+    }
+}
+
 fn empty_item() -> ReviewItem {
     ReviewItem {
         state: "empty",
@@ -235,11 +361,13 @@ fn empty_item() -> ReviewItem {
         date_origin: None,
         tags: vec![],
         preview_url: None,
+        imported_count: 0,
+        skipped_count: 0,
         message: "There are no pending items in this review.".into(),
     }
 }
 fn review_state(connection: &Connection) -> Result<ReviewState, ReviewError> {
-    match connection.query_row("SELECT source_path, (SELECT count(*) FROM review_candidates WHERE session_id = review_sessions.id AND decision IS NULL) FROM review_sessions WHERE state = 'active' ORDER BY id DESC LIMIT 1", [], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))) { Ok((source_path, candidate_count)) => Ok(ReviewState { state: "resumable", source_path: Some(source_path), candidate_count, message: "Resume the safe read-only review. Originals are never modified.".into() }), Err(rusqlite::Error::QueryReturnedNoRows) => Ok(ReviewState { state: "none", source_path: None, candidate_count: 0, message: "No unfinished review is available.".into() }), Err(error) => Err(database_error(error)) }
+    match connection.query_row("SELECT source_path, state, (SELECT count(*) FROM review_candidates WHERE session_id = review_sessions.id AND decision IS NULL) FROM review_sessions ORDER BY id DESC LIMIT 1", [], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, u64>(2)?))) { Ok((source_path, state, candidate_count)) => Ok(ReviewState { state: if state == "complete" { "complete" } else { "resumable" }, source_path: Some(source_path), candidate_count, message: if state == "complete" { "Resume to check this source for newly added supported files. Originals are never modified.".into() } else { "Resume the safe read-only review. Originals are never modified.".into() } }), Err(rusqlite::Error::QueryReturnedNoRows) => Ok(ReviewState { state: "none", source_path: None, candidate_count: 0, message: "No unfinished review is available.".into() }), Err(error) => Err(database_error(error)) }
 }
 fn pending_candidate(
     connection: &Connection,
@@ -268,6 +396,12 @@ fn record_decision(
         )
         .map_err(database_error)?;
     transaction.execute("INSERT INTO item_decisions (candidate_id, decision, destination_path, effective_import_date, date_origin) VALUES (?1, ?2, ?3, ?4, ?5)", params![candidate_id, decision, destination.map(|path| path.display().to_string()), date, if date.is_some() { Some("user") } else { None }]).map_err(database_error)?;
+    transaction
+        .execute(
+            "UPDATE review_sessions SET state = 'complete' WHERE id = (SELECT session_id FROM review_candidates WHERE id = ?1) AND NOT EXISTS (SELECT 1 FROM review_candidates WHERE session_id = (SELECT session_id FROM review_candidates WHERE id = ?1) AND decision IS NULL)",
+            [candidate_id],
+        )
+        .map_err(database_error)?;
     transaction.commit().map_err(database_error)
 }
 fn candidate_tags(connection: &Connection, candidate_id: i64) -> Result<Vec<String>, ReviewError> {
@@ -576,6 +710,7 @@ mod tests {
     use tempfile::tempdir;
     #[test]
     fn discovery_is_sorted_filters_media_and_never_mutates_source() {
+        let _session_guard = library::test_session_guard();
         let source = tempdir().unwrap();
         fs::create_dir(source.path().join("nested")).unwrap();
         let photo = source.path().join("nested/a.JPG");
@@ -589,6 +724,7 @@ mod tests {
     }
     #[test]
     fn normalizes_tags_and_validates_dates() {
+        let _session_guard = library::test_session_guard();
         assert_eq!(
             normalize_tags(&[
                 " Beach ".into(),
@@ -607,6 +743,7 @@ mod tests {
 
     #[test]
     fn asset_urls_encode_the_entire_absolute_path() {
+        let _session_guard = library::test_session_guard();
         let url = asset_url(Path::new("/Users/example/Pictures/family photo.jpg")).unwrap();
         assert_eq!(
             url,
@@ -615,6 +752,7 @@ mod tests {
     }
     #[test]
     fn copy_uses_date_folder_unique_name_and_preserves_source() {
+        let _session_guard = library::test_session_guard();
         let source_dir = tempdir().unwrap();
         let library = tempdir().unwrap();
         let source = source_dir.path().join("family.jpg");
@@ -628,6 +766,7 @@ mod tests {
     }
     #[test]
     fn unavailable_source_does_not_publish_or_change_it() {
+        let _session_guard = library::test_session_guard();
         let source_dir = tempdir().unwrap();
         let library = tempdir().unwrap();
         let source = source_dir.path().join("gone.jpg");
@@ -642,6 +781,7 @@ mod tests {
 
     #[test]
     fn skip_and_normalized_tags_persist_after_reopening_the_catalogue() {
+        let _session_guard = library::test_session_guard();
         let library_dir = tempdir().unwrap();
         let source_dir = tempdir().unwrap();
         fs::write(source_dir.path().join("keep.jpg"), b"original bytes").unwrap();
@@ -692,7 +832,254 @@ mod tests {
     }
     #[test]
     fn review_commands_require_an_unlocked_library_session() {
+        let _session_guard = library::test_session_guard();
         library::lock_library();
         assert_eq!(current_review_state().unwrap_err().code, "library_locked");
+    }
+
+    #[test]
+    fn completing_a_review_persists_counts_across_lock_and_reopen() {
+        let _session_guard = library::test_session_guard();
+        let library_dir = tempdir().unwrap();
+        let source_dir = tempdir().unwrap();
+        fs::write(source_dir.path().join("import.jpg"), b"import me").unwrap();
+        fs::write(source_dir.path().join("skip.jpg"), b"skip me").unwrap();
+        library::setup_library(library::SetupLibraryRequest {
+            folder_path: library_dir.path().display().to_string(),
+            password: "correct horse battery staple".into(),
+            password_confirmation: "correct horse battery staple".into(),
+            recovery_question: "First pet?".into(),
+            recovery_answer: "Mochi".into(),
+        })
+        .unwrap();
+        start_review(&source_dir.path().display().to_string()).unwrap();
+        let candidate_ids = library::with_catalogue(|connection, _| {
+            let mut statement = connection
+                .prepare("SELECT id FROM review_candidates ORDER BY relative_path")
+                .map_err(database_error)?;
+            let candidate_ids = statement
+                .query_map([], |row| row.get::<_, i64>(0))
+                .map_err(database_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(database_error)?;
+            Ok::<_, ReviewError>(candidate_ids)
+        })
+        .unwrap();
+        import_review_item(ImportRequest {
+            candidate_id: candidate_ids[0],
+            tags: vec!["kept".into()],
+            effective_import_date: "2026-08-28".into(),
+        })
+        .unwrap();
+        skip_review_item(DecideRequest {
+            candidate_id: candidate_ids[1],
+            tags: vec![],
+        })
+        .unwrap();
+
+        library::lock_library();
+        assert_eq!(current_review_state().unwrap_err().code, "library_locked");
+        library::unlock_library(
+            &library_dir.path().display().to_string(),
+            library::UnlockLibraryRequest {
+                password: "correct horse battery staple".into(),
+            },
+        )
+        .unwrap();
+        let completed =
+            library::with_catalogue(|connection, _| completion_item(connection)).unwrap();
+        assert_eq!(completed.state, "complete");
+        assert_eq!(completed.imported_count, 1);
+        assert_eq!(completed.skipped_count, 1);
+        assert_eq!(
+            fs::read(source_dir.path().join("import.jpg")).unwrap(),
+            b"import me"
+        );
+        assert_eq!(
+            fs::read(source_dir.path().join("skip.jpg")).unwrap(),
+            b"skip me"
+        );
+    }
+
+    #[test]
+    fn resuming_a_completed_source_adds_only_new_candidates() {
+        let _session_guard = library::test_session_guard();
+        let library_dir = tempdir().unwrap();
+        let source_dir = tempdir().unwrap();
+        let first = source_dir.path().join("already-reviewed.jpg");
+        fs::write(&first, b"first original").unwrap();
+        library::setup_library(library::SetupLibraryRequest {
+            folder_path: library_dir.path().display().to_string(),
+            password: "correct horse battery staple".into(),
+            password_confirmation: "correct horse battery staple".into(),
+            recovery_question: "First pet?".into(),
+            recovery_answer: "Mochi".into(),
+        })
+        .unwrap();
+        start_review(&source_dir.path().display().to_string()).unwrap();
+        let first_candidate = library::with_catalogue(|connection, _| {
+            connection
+                .query_row("SELECT id FROM review_candidates", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map_err(database_error)
+        })
+        .unwrap();
+        skip_review_item(DecideRequest {
+            candidate_id: first_candidate,
+            tags: vec!["reviewed".into()],
+        })
+        .unwrap();
+
+        let new_file = source_dir.path().join("nested/newly-added.mp4");
+        fs::create_dir(new_file.parent().unwrap()).unwrap();
+        fs::write(&new_file, b"new original").unwrap();
+        let resumed = start_review(&source_dir.path().display().to_string()).unwrap();
+        assert_eq!(resumed.state, "resumable");
+        assert_eq!(resumed.candidate_count, 1);
+        let candidates = library::with_catalogue(|connection, _| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT relative_path, decision FROM review_candidates ORDER BY relative_path",
+                )
+                .map_err(database_error)?;
+            let candidates = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })
+                .map_err(database_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(database_error)?;
+            Ok::<_, ReviewError>(candidates)
+        })
+        .unwrap();
+        assert_eq!(
+            candidates,
+            vec![
+                ("already-reviewed.jpg".into(), Some("skipped".into())),
+                ("nested/newly-added.mp4".into(), None),
+            ]
+        );
+        let new_candidate = library::with_catalogue(|connection, _| {
+            connection
+                .query_row(
+                    "SELECT id FROM review_candidates WHERE relative_path = 'nested/newly-added.mp4'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(database_error)
+        })
+        .unwrap();
+        skip_review_item(DecideRequest {
+            candidate_id: new_candidate,
+            tags: vec![],
+        })
+        .unwrap();
+        let completion =
+            library::with_catalogue(|connection, _| completion_item(connection)).unwrap();
+        assert_eq!(completion.skipped_count, 2);
+        assert_eq!(fs::read(first).unwrap(), b"first original");
+        assert_eq!(fs::read(new_file).unwrap(), b"new original");
+    }
+
+    #[test]
+    fn failed_decision_does_not_complete_or_change_the_source() {
+        let _session_guard = library::test_session_guard();
+        let library_dir = tempdir().unwrap();
+        let source_dir = tempdir().unwrap();
+        let source = source_dir.path().join("still-pending.jpg");
+        fs::write(&source, b"original").unwrap();
+        library::setup_library(library::SetupLibraryRequest {
+            folder_path: library_dir.path().display().to_string(),
+            password: "correct horse battery staple".into(),
+            password_confirmation: "correct horse battery staple".into(),
+            recovery_question: "First pet?".into(),
+            recovery_answer: "Mochi".into(),
+        })
+        .unwrap();
+        start_review(&source_dir.path().display().to_string()).unwrap();
+        assert_eq!(
+            skip_review_item(DecideRequest {
+                candidate_id: -1,
+                tags: vec![],
+            })
+            .unwrap_err()
+            .code,
+            "candidate_not_pending"
+        );
+        assert_eq!(current_review_state().unwrap().state, "resumable");
+        assert_eq!(fs::read(source).unwrap(), b"original");
+    }
+
+    #[test]
+    fn switching_sources_retains_the_first_pending_review() {
+        let _session_guard = library::test_session_guard();
+        let library_dir = tempdir().unwrap();
+        let first_source = tempdir().unwrap();
+        let second_source = tempdir().unwrap();
+        let first_file = first_source.path().join("first.jpg");
+        let second_file = second_source.path().join("second.jpg");
+        fs::write(&first_file, b"first original").unwrap();
+        fs::write(&second_file, b"second original").unwrap();
+        library::setup_library(library::SetupLibraryRequest {
+            folder_path: library_dir.path().display().to_string(),
+            password: "correct horse battery staple".into(),
+            password_confirmation: "correct horse battery staple".into(),
+            recovery_question: "First pet?".into(),
+            recovery_answer: "Mochi".into(),
+        })
+        .unwrap();
+        start_review(&first_source.path().display().to_string()).unwrap();
+        start_review(&second_source.path().display().to_string()).unwrap();
+        assert_eq!(
+            current_review_state().unwrap().source_path.as_deref(),
+            Some(
+                second_source
+                    .path()
+                    .canonicalize()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+            )
+        );
+        let second_candidate = library::with_catalogue(|connection, _| {
+            connection
+                .query_row(
+                    "SELECT c.id FROM review_candidates c JOIN review_sessions s ON s.id = c.session_id WHERE s.source_path = ?1",
+                    [second_source.path().canonicalize().unwrap().display().to_string()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(database_error)
+        })
+        .unwrap();
+        skip_review_item(DecideRequest {
+            candidate_id: second_candidate,
+            tags: vec![],
+        })
+        .unwrap();
+        assert_eq!(
+            current_review_state().unwrap().source_path.as_deref(),
+            Some(
+                second_source
+                    .path()
+                    .canonicalize()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+            )
+        );
+        let first_is_still_pending = library::with_catalogue(|connection, _| {
+            connection
+                .query_row(
+                    "SELECT count(*) FROM review_candidates c JOIN review_sessions s ON s.id = c.session_id WHERE s.source_path = ?1 AND c.decision IS NULL",
+                    [first_source.path().canonicalize().unwrap().display().to_string()],
+                    |row| row.get::<_, u64>(0),
+                )
+                .map_err(database_error)
+        })
+        .unwrap();
+        assert_eq!(first_is_still_pending, 1);
+        assert_eq!(fs::read(first_file).unwrap(), b"first original");
+        assert_eq!(fs::read(second_file).unwrap(), b"second original");
     }
 }

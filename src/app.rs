@@ -68,6 +68,8 @@ struct ReviewItem {
     date_origin: Option<String>,
     tags: Vec<String>,
     preview_url: Option<String>,
+    imported_count: u64,
+    skipped_count: u64,
     message: String,
 }
 
@@ -215,6 +217,8 @@ pub fn App() -> Element {
         date_origin: None,
         tags: vec![],
         preview_url: None,
+        imported_count: 0,
+        skipped_count: 0,
         message: String::new(),
     });
     let mut review_tags = use_signal(String::new);
@@ -527,6 +531,23 @@ pub fn App() -> Element {
         }
     };
 
+    let lock_and_reopen = move |_| async move {
+        error.set(String::new());
+        busy.set(true);
+        let result = invoke("lock_library", JsValue::NULL).await;
+        busy.set(false);
+        match result {
+            Ok(_) => {
+                password.set(String::new());
+                step.set("unlock".into());
+            }
+            Err(value) => error.set(command_error(
+                value,
+                "Could not lock the protected library.",
+            )),
+        }
+    };
+
     let create = move |event: FormEvent| async move {
         event.prevent_default();
         error.set(String::new());
@@ -796,13 +817,14 @@ pub fn App() -> Element {
                         h2 { "Choose where to import from." }
                         p { class: "lede", "Your protected library is ready. Starting review reads supported files but never modifies your originals." }
                         div { class: "folder-summary", span { "Protected library" } strong { "{folder}" } }
+                        button { class: "secondary-button", r#type: "button", onclick: lock_and_reopen, disabled: busy(), "Lock library" }
                         if import_source().state == "ready" {
                             div { class: "folder-summary",
                                 span { "Import source" }
                                 strong { "{import_source().folder_path.clone().unwrap_or_default()}" }
                                 button { r#type: "button", onclick: choose_import_source, disabled: busy(), "Change" }
                             }
-                            if review_state().state == "resumable" {
+                            if review_state().state == "resumable" || review_state().state == "complete" {
                                 button { class: "primary-button", r#type: "button", onclick: start_review, disabled: busy(), "Resume review" }
                             } else {
                                 button { class: "primary-button", r#type: "button", onclick: start_review, disabled: busy(), if busy() { "Starting safe review…" } else { "Start review" } }
@@ -833,7 +855,7 @@ pub fn App() -> Element {
                                 div { class: "review-context", strong { "{review_item().filename.clone().unwrap_or_default()}" } small { "{review_item().relative_path.clone().unwrap_or_default()}" } }
                                 if review_item().state == "item" {
                                     if review_item().media_type.as_deref() == Some("video") {
-                                        video { class: "media-preview", controls: true, src: "{review_item().preview_url.clone().unwrap_or_default()}" }
+                                        video { class: "media-preview", controls: true, src: "{review_item().preview_url.clone().unwrap_or_default()}", onerror: move |_| error.set("This video cannot be played by the embedded browser. Its details remain available and it was not decided automatically; try another supported desktop codec or Skip explicitly.".into()) }
                                     } else {
                                         img { class: "media-preview", src: "{review_item().preview_url.clone().unwrap_or_default()}", alt: "Preview of {review_item().filename.clone().unwrap_or_default()}" }
                                     }
@@ -843,6 +865,19 @@ pub fn App() -> Element {
                                 p { class: "privacy-note", "Date source: {review_date_origin}. {review_item().message}" }
                                 div { class: "decision-actions", button { class: "secondary-button", r#type: "button", onclick: skip_item, disabled: busy(), "Skip" } button { class: "primary-button", r#type: "button", onclick: import_item, disabled: busy() || review_item().state != "item", if busy() { "Saving decision…" } else { "Import copy" } } }
                             }
+                        } else if review_item().state == "complete" {
+                            h2 { "Review complete." }
+                            p { class: "lede", "{review_item().message}" }
+                            div { class: "completion-counts", role: "status",
+                                p { strong { "{review_item().imported_count}" } " imported" }
+                                p { strong { "{review_item().skipped_count}" } " skipped" }
+                            }
+                            p { class: "privacy-note", "Every original remains at its source. Nothing was deleted or moved." }
+                            div { class: "decision-actions",
+                                button { class: "secondary-button", r#type: "button", onclick: move |_| step.set("home".into()), "Back to library home" }
+                                button { class: "primary-button", r#type: "button", onclick: move |_| step.set("home".into()), "Review another folder" }
+                            }
+                            button { class: "secondary-button", r#type: "button", onclick: lock_and_reopen, disabled: busy(), "Lock and reopen later" }
                         } else {
                             h2 { "Review queue is clear." }
                             p { class: "lede", "{review_item().message}" }

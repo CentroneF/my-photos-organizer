@@ -155,6 +155,15 @@ fn active_session() -> &'static Mutex<Option<AuthenticatedSession>> {
     SESSION.get_or_init(|| Mutex::new(None))
 }
 
+#[cfg(test)]
+pub(crate) fn test_session_guard() -> std::sync::MutexGuard<'static, ()> {
+    static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+    GUARD
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn establish_session(library_path: &Path, database_key: [u8; KEY_BYTES]) {
     *active_session()
         .lock()
@@ -770,6 +779,7 @@ mod tests {
 
     #[test]
     fn initializes_only_its_own_state_in_an_empty_folder() {
+        let _session_guard = test_session_guard();
         let directory = tempdir().unwrap();
         let result = setup_library(request(directory.path())).unwrap();
         assert_eq!(result.folder_path, directory.path().display().to_string());
@@ -781,6 +791,7 @@ mod tests {
 
     #[test]
     fn inspection_distinguishes_empty_and_existing_libraries() {
+        let _session_guard = test_session_guard();
         let directory = tempdir().unwrap();
         let empty = inspect_library_folder(InspectLibraryFolderRequest {
             folder_path: directory.path().display().to_string(),
@@ -798,6 +809,7 @@ mod tests {
 
     #[test]
     fn inspection_rejects_foreign_content_without_mutation() {
+        let _session_guard = test_session_guard();
         let directory = tempdir().unwrap();
         let original = directory.path().join("family.png");
         fs::write(&original, b"original bytes").unwrap();
@@ -811,6 +823,7 @@ mod tests {
 
     #[test]
     fn rejects_non_empty_folder_without_changing_its_file() {
+        let _session_guard = test_session_guard();
         let directory = tempdir().unwrap();
         let original = directory.path().join("original.jpg");
         fs::write(&original, b"do not touch").unwrap();
@@ -822,6 +835,7 @@ mod tests {
 
     #[test]
     fn duplicate_initialization_is_rejected_without_overwrite() {
+        let _session_guard = test_session_guard();
         let directory = tempdir().unwrap();
         setup_library(request(directory.path())).unwrap();
         let marker = fs::read(directory.path().join(STATE_DIR).join(MARKER_FILE)).unwrap();
@@ -835,6 +849,7 @@ mod tests {
 
     #[test]
     fn catalogue_cannot_be_read_without_its_database_key() {
+        let _session_guard = test_session_guard();
         let directory = tempdir().unwrap();
         setup_library(request(directory.path())).unwrap();
         let database = directory.path().join(STATE_DIR).join(DATABASE_FILE);
@@ -847,6 +862,7 @@ mod tests {
 
     #[test]
     fn remembers_only_the_selected_library_path_in_app_settings() {
+        let _session_guard = test_session_guard();
         let settings = tempdir().unwrap();
         remember_library_path(settings.path(), "/example/library").unwrap();
         let pointer: serde_json::Value =
@@ -857,6 +873,7 @@ mod tests {
 
     #[test]
     fn invalid_request_leaves_target_untouched() {
+        let _session_guard = test_session_guard();
         let directory = tempdir().unwrap();
         let mut invalid = request(directory.path());
         invalid.password_confirmation = "different".into();
@@ -896,6 +913,7 @@ mod tests {
 
     #[test]
     fn correct_password_reopens_the_same_library() {
+        let _session_guard = test_session_guard();
         let directory = tempdir().unwrap();
         setup_library(request(directory.path())).unwrap();
 
@@ -910,6 +928,7 @@ mod tests {
 
     #[test]
     fn wrong_password_does_not_change_catalogue_or_marker() {
+        let _session_guard = test_session_guard();
         let directory = tempdir().unwrap();
         setup_library(request(directory.path())).unwrap();
         let state = directory.path().join(STATE_DIR);
@@ -932,6 +951,7 @@ mod tests {
 
     #[test]
     fn recovery_answer_resets_password_without_replacing_catalogue() {
+        let _session_guard = test_session_guard();
         let directory = tempdir().unwrap();
         setup_library(request(directory.path())).unwrap();
         let database = directory.path().join(STATE_DIR).join(DATABASE_FILE);
@@ -967,6 +987,7 @@ mod tests {
 
     #[test]
     fn unlock_migrates_a_supported_older_catalogue_schema() {
+        let _session_guard = test_session_guard();
         let directory = tempdir().unwrap();
         setup_library(request(directory.path())).unwrap();
         update_catalogue_versions(directory.path(), 0);
@@ -998,6 +1019,7 @@ mod tests {
 
     #[test]
     fn newer_catalogue_schema_is_rejected_without_mutation() {
+        let _session_guard = test_session_guard();
         let directory = tempdir().unwrap();
         setup_library(request(directory.path())).unwrap();
         update_catalogue_versions(directory.path(), CATALOGUE_FORMAT_VERSION + 1);
@@ -1016,6 +1038,7 @@ mod tests {
 
     #[test]
     fn wrong_recovery_answer_preserves_all_library_files() {
+        let _session_guard = test_session_guard();
         let directory = tempdir().unwrap();
         setup_library(request(directory.path())).unwrap();
         let state = directory.path().join(STATE_DIR);
@@ -1043,6 +1066,7 @@ mod tests {
 
     #[test]
     fn stale_pointer_and_foreign_or_unsupported_libraries_are_rejected_without_mutation() {
+        let _session_guard = test_session_guard();
         let settings = tempdir().unwrap();
         remember_library_path(settings.path(), "/missing/photo-handler-library").unwrap();
         assert_eq!(remembered_library(settings.path()).unwrap().state, "stale");

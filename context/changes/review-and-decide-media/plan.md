@@ -245,21 +245,21 @@ Advance the catalogue schema version transactionally from the existing version-1
 
 #### Automated
 
-- [x] 2.1 Add native review-item, preview, tag, skip, and atomic date-folder import commands
-- [x] 2.2 Add the focused photo/video review UI with editable date and explicit decisions
-- [x] 2.3 Verify workspace tests, compilation, encrypted decision persistence, and copy/source safety
+- [x] 2.1 Add native review-item, preview, tag, skip, and atomic date-folder import commands — 1aa7e48
+- [x] 2.2 Add the focused photo/video review UI with editable date and explicit decisions — 1aa7e48
+- [x] 2.3 Verify workspace tests, compilation, encrypted decision persistence, and copy/source safety — 1aa7e48
 
 #### Manual
 
-- [x] 2.4 Confirm desktop image/video preview, tagging, date override, import, skip, collision naming, and source preservation
+- [x] 2.4 Confirm desktop image/video preview, tagging, date override, import, skip, collision naming, and source preservation — 1aa7e48
 
 ### Phase 3: Finish the review loop and harden verification
 
 #### Automated
 
-- [ ] 3.1 Add completion/recovery state and lifecycle regression coverage
-- [ ] 3.2 Verify workspace tests, compilation, full lifecycle, and no partial-import/source-mutation failures
+- [x] 3.1 Add completion/recovery state and lifecycle regression coverage
+- [x] 3.2 Verify workspace tests, compilation, full lifecycle, and no partial-import/source-mutation failures
 
 #### Manual
 
-- [ ] 3.3 Confirm completion counts, lock/reopen resume, folder switching, and platform playback fallback behavior
+- [x] 3.3 Confirm completion counts, lock/reopen resume, folder switching, and platform playback fallback behavior

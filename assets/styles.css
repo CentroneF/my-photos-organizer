@@ -70,6 +70,9 @@ button:disabled { cursor: wait; opacity: .65; }
 .review-field input { width: 100%; padding: .82rem .9rem; border: 1px solid #d4d0c8; border-radius: .7rem; outline: none; color: #17213b; background: #fffdf8; }
 .review-field input:focus { border-color: #6a64ad; box-shadow: 0 0 0 3px rgba(106, 100, 173, .13); }
 .decision-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.completion-counts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; margin: 1.5rem 0; }
+.completion-counts p { margin: 0; padding: 1rem; border-radius: .85rem; color: #3f4559; background: #efebe1; text-align: center; }
+.completion-counts strong { display: block; color: #24776a; font-size: 1.8rem; }
 
 @media (max-width: 820px) {
   .app-shell { grid-template-columns: 1fr; }
