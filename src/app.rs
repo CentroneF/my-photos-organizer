@@ -922,7 +922,7 @@ pub fn App() -> Element {
                             form { class: "setup-form", onsubmit: clean_library,
                                 p { class: "step-label", "DANGER ZONE" }
                                 h3 { "Clean managed debug media" }
-                                p { class: "lede", "Eligible managed date folders will be moved to your operating system Trash. This clears review history and the remembered import folder." }
+                                p { class: "lede", "Eligible managed date folders will be moved to your operating system Trash. Only after every move succeeds, this clears review history and the remembered import folder. If a move fails, you can safely retry." }
                                 p { class: "privacy-note", "Original source media, .photo-handler, and unrelated content in this library are preserved." }
                                 label { "Current library password" input { r#type: "password", autocomplete: "current-password", value: "{clean_password}", oninput: move |event| clean_password.set(event.value()) } }
                                 button { class: "primary-button", r#type: "submit", disabled: busy(), if busy() { "Cleaning managed media…" } else { "Move managed copies to Trash" } }

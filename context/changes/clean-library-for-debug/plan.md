@@ -177,22 +177,22 @@ No schema migration is required: cleanup removes only mutable review data from t
 
 #### Automated
 
-- [x] 1.1 Add native password-confirmed cleanup, Trash integration, metadata/source-pointer clearing, and command registration.
-- [x] 1.2 Add the unlocked-home danger-zone confirmation flow and cleanup state refresh.
-- [x] 1.3 Verify workspace tests, compilation, strict target selection, and setup/source preservation.
+- [x] 1.1 Add native password-confirmed cleanup, Trash integration, metadata/source-pointer clearing, and command registration. — 31e5c8a
+- [x] 1.2 Add the unlocked-home danger-zone confirmation flow and cleanup state refresh. — 31e5c8a
+- [x] 1.3 Verify workspace tests, compilation, strict target selection, and setup/source preservation. — 31e5c8a
 
 #### Manual
 
-- [x] 1.4 Confirm a complete password-confirmed desktop cleanup sends managed copies to Trash and preserves an unlocked, reusable library.
+- [x] 1.4 Confirm a complete password-confirmed desktop cleanup sends managed copies to Trash and preserves an unlocked, reusable library. — 31e5c8a
 
 ### Phase 2: Partial-cleanup recovery and hardening
 
 #### Automated
 
-- [ ] 2.1 Add retryable incomplete-cleanup behavior that retains metadata and import-source selection until all targets are trashed.
-- [ ] 2.2 Add deterministic partial-failure, retry, malformed-path, and source/unrelated-content regression coverage.
-- [ ] 2.3 Verify workspace tests and compilation for complete and partial cleanup paths.
+- [x] 2.1 Add retryable incomplete-cleanup behavior that retains metadata and import-source selection until all targets are trashed.
+- [x] 2.2 Add deterministic partial-failure, retry, malformed-path, and source/unrelated-content regression coverage.
+- [x] 2.3 Verify workspace tests and compilation for complete and partial cleanup paths.
 
 #### Manual
 
-- [ ] 2.4 Confirm the desktop retry flow after a Trash failure preserves state until a later successful cleanup.
+- [x] 2.4 Confirm the desktop retry flow after a Trash failure preserves state until a later successful cleanup.

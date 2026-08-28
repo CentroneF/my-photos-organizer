@@ -122,6 +122,8 @@ pub struct RecoveryQuestionResult {
 pub struct SetupLibraryError {
     pub code: &'static str,
     pub message: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub failed_targets: Vec<String>,
 }
 
 impl SetupLibraryError {
@@ -129,6 +131,18 @@ impl SetupLibraryError {
         Self {
             code,
             message: message.into(),
+            failed_targets: Vec::new(),
+        }
+    }
+
+    fn cleanup_incomplete(failed_targets: Vec<String>) -> Self {
+        let target_summary = failed_targets.join(", ");
+        Self {
+            code: "cleanup_incomplete",
+            message: format!(
+                "Could not move {target_summary} to the operating system Trash. Review data and the remembered import folder were kept so you can retry."
+            ),
+            failed_targets,
         }
     }
 }
@@ -195,8 +209,18 @@ pub fn lock_library() {
 }
 
 pub fn clean_library(
+    request: CleanLibraryRequest,
+    app_data_dir: &Path,
+) -> Result<CleanLibraryResult, SetupLibraryError> {
+    clean_library_with_trash(request, app_data_dir, |target| {
+        trash::delete(target).map_err(|error| error.to_string())
+    })
+}
+
+fn clean_library_with_trash(
     mut request: CleanLibraryRequest,
     app_data_dir: &Path,
+    move_to_trash: impl Fn(&Path) -> Result<(), String>,
 ) -> Result<CleanLibraryResult, SetupLibraryError> {
     if request.password.is_empty() {
         return Err(SetupLibraryError::new(
@@ -212,16 +236,21 @@ pub fn clean_library(
         request.password.clear();
 
         let targets = managed_media_folders(library_path)?;
+        let mut failed_targets = Vec::new();
         for target in &targets {
-            trash::delete(target).map_err(|error| {
-                SetupLibraryError::new(
-                    "cleanup_incomplete",
-                    format!(
-                        "Could not move {} to the operating system Trash. Review data was kept so you can retry. ({error})",
-                        target.display()
-                    ),
-                )
-            })?;
+            if move_to_trash(target).is_err() {
+                // Only expose the validated date-folder name, never an arbitrary filesystem path.
+                failed_targets.push(
+                    target
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+        if !failed_targets.is_empty() {
+            return Err(SetupLibraryError::cleanup_incomplete(failed_targets));
         }
 
         let transaction = connection.unchecked_transaction().map_err(|error| {
@@ -929,6 +958,7 @@ fn write_marker(state_dir: &Path, marker: &LibraryMarker) -> Result<(), SetupLib
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use tempfile::tempdir;
 
     fn request(path: &Path) -> SetupLibraryRequest {
@@ -1288,12 +1318,30 @@ mod tests {
         fs::create_dir(&mixed_year).unwrap();
         fs::create_dir(mixed_year.join("2025-01-01")).unwrap();
         fs::write(mixed_year.join("notes.txt"), b"preserve").unwrap();
+        let malformed_year = library.path().join("2024");
+        fs::create_dir(&malformed_year).unwrap();
+        fs::create_dir(malformed_year.join("2024-13-40")).unwrap();
         fs::create_dir(library.path().join("not-a-year")).unwrap();
 
         assert_eq!(
             managed_media_folders(library.path()).unwrap(),
             vec![managed_year.join("2026-08-28")]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_media_classification_rejects_symlinked_date_paths() {
+        use std::os::unix::fs::symlink;
+
+        let library = tempdir().unwrap();
+        let year = library.path().join("2026");
+        let outside = tempdir().unwrap();
+        fs::create_dir(&year).unwrap();
+        symlink(outside.path(), year.join("2026-08-28")).unwrap();
+
+        assert!(managed_media_folders(library.path()).unwrap().is_empty());
+        assert!(outside.path().exists());
     }
 
     #[test]
@@ -1337,5 +1385,158 @@ mod tests {
             "incorrect_credentials"
         );
         assert!(managed_year.exists());
+    }
+
+    fn seed_review_data_and_source(library: &Path, settings: &Path, source: &Path) {
+        import_source::save_import_source(
+            settings,
+            &library.display().to_string(),
+            import_source::SaveImportSourceRequest {
+                folder_path: source.display().to_string(),
+            },
+        )
+        .unwrap();
+        with_catalogue(|connection, _| {
+            connection.execute_batch(
+                "INSERT INTO review_sessions (id, source_path, state) VALUES (1, '/source', 'complete');\
+                 INSERT INTO review_candidates (id, session_id, relative_path, file_size, modified_at, media_type) VALUES (1, 1, 'copy.jpg', 1, 1, 'image');\
+                 INSERT INTO tags (id, normalized_name) VALUES (1, 'debug');\
+                 INSERT INTO candidate_tags (candidate_id, tag_id) VALUES (1, 1);\
+                 INSERT INTO item_decisions (candidate_id, decision, destination_path) VALUES (1, 'imported', '/missing/old-copy.jpg');",
+            )
+            .map_err(|error| SetupLibraryError::new("test_failed", error.to_string()))?;
+            Ok::<_, SetupLibraryError>(())
+        })
+        .unwrap();
+    }
+
+    fn review_row_count() -> i64 {
+        with_catalogue(|connection, _| {
+            connection.query_row(
+                "SELECT (SELECT count(*) FROM review_sessions) + (SELECT count(*) FROM review_candidates) + (SELECT count(*) FROM tags) + (SELECT count(*) FROM candidate_tags) + (SELECT count(*) FROM item_decisions)",
+                [],
+                |row| row.get(0),
+            ).map_err(|error| SetupLibraryError::new("test_failed", error.to_string()))
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn partial_cleanup_keeps_metadata_and_source_until_a_successful_retry() {
+        let _session_guard = test_session_guard();
+        let library = tempdir().unwrap();
+        let settings = tempdir().unwrap();
+        let source = tempdir().unwrap();
+        let original = source.path().join("original.jpg");
+        fs::write(&original, b"original").unwrap();
+        setup_library(request(library.path())).unwrap();
+        let first = library.path().join("2026").join("2026-08-28");
+        let second = library.path().join("2026").join("2026-08-30");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::write(first.join("copy.jpg"), b"copy").unwrap();
+        fs::write(second.join("copy.jpg"), b"copy").unwrap();
+        let unrelated = library.path().join("notes.txt");
+        fs::write(&unrelated, b"preserve").unwrap();
+
+        unlock_library(
+            &library.path().display().to_string(),
+            unlock_request("correct horse battery staple"),
+        )
+        .unwrap();
+        seed_review_data_and_source(library.path(), settings.path(), source.path());
+
+        let moves = Cell::new(0);
+        let error = clean_library_with_trash(
+            CleanLibraryRequest {
+                password: "correct horse battery staple".into(),
+            },
+            settings.path(),
+            |target| {
+                moves.set(moves.get() + 1);
+                if target == second {
+                    Err("simulated Trash failure".into())
+                } else {
+                    fs::remove_dir_all(target).map_err(|error| error.to_string())
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "cleanup_incomplete");
+        assert_eq!(error.failed_targets, vec!["2026-08-30"]);
+        assert_eq!(moves.get(), 2);
+        assert!(!first.exists());
+        assert!(second.exists());
+        assert_eq!(review_row_count(), 5);
+        assert_eq!(
+            import_source::remembered_import_source(settings.path())
+                .unwrap()
+                .state,
+            "ready"
+        );
+        assert_eq!(fs::read(&original).unwrap(), b"original");
+        assert_eq!(fs::read(&unrelated).unwrap(), b"preserve");
+
+        let result = clean_library_with_trash(
+            CleanLibraryRequest {
+                password: "correct horse battery staple".into(),
+            },
+            settings.path(),
+            |target| fs::remove_dir_all(target).map_err(|error| error.to_string()),
+        )
+        .unwrap();
+        assert_eq!(result.moved_folder_count, 1);
+        assert!(!second.exists());
+        assert_eq!(review_row_count(), 0);
+        assert_eq!(
+            import_source::remembered_import_source(settings.path())
+                .unwrap()
+                .state,
+            "missing"
+        );
+        assert!(library.path().join(STATE_DIR).join(MARKER_FILE).is_file());
+        assert!(library.path().join(STATE_DIR).join(DATABASE_FILE).is_file());
+        lock_library();
+        assert!(unlock_library(
+            &library.path().display().to_string(),
+            unlock_request("correct horse battery staple"),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn empty_cleanup_clears_only_review_state_and_ignores_stale_destinations() {
+        let _session_guard = test_session_guard();
+        let library = tempdir().unwrap();
+        let settings = tempdir().unwrap();
+        let source = tempdir().unwrap();
+        let original = source.path().join("original.jpg");
+        fs::write(&original, b"original").unwrap();
+        setup_library(request(library.path())).unwrap();
+        unlock_library(
+            &library.path().display().to_string(),
+            unlock_request("correct horse battery staple"),
+        )
+        .unwrap();
+        seed_review_data_and_source(library.path(), settings.path(), source.path());
+
+        let result = clean_library_with_trash(
+            CleanLibraryRequest {
+                password: "correct horse battery staple".into(),
+            },
+            settings.path(),
+            |_| panic!("an empty library must not invoke Trash"),
+        )
+        .unwrap();
+        assert_eq!(result.moved_folder_count, 0);
+        assert_eq!(review_row_count(), 0);
+        assert_eq!(
+            import_source::remembered_import_source(settings.path())
+                .unwrap()
+                .state,
+            "missing"
+        );
+        assert_eq!(fs::read(&original).unwrap(), b"original");
     }
 }
