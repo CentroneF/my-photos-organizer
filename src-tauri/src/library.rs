@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
 };
 
 use aes_gcm::{
@@ -16,7 +17,8 @@ const STATE_DIR: &str = ".photo-handler";
 const MARKER_FILE: &str = "library.json";
 const DATABASE_FILE: &str = "catalogue.db";
 const LIBRARY_POINTER_FILE: &str = "selected-library.json";
-const FORMAT_VERSION: u32 = 1;
+const MARKER_FORMAT_VERSION: u32 = 1;
+const CATALOGUE_FORMAT_VERSION: u32 = 2;
 const KEY_BYTES: usize = 32;
 const SALT_BYTES: usize = 16;
 const NONCE_BYTES: usize = 12;
@@ -137,6 +139,75 @@ struct LibraryPointer {
     folder_path: String,
 }
 
+struct AuthenticatedSession {
+    library_path: PathBuf,
+    database_key: [u8; KEY_BYTES],
+}
+
+impl Drop for AuthenticatedSession {
+    fn drop(&mut self) {
+        self.database_key.fill(0);
+    }
+}
+
+fn active_session() -> &'static Mutex<Option<AuthenticatedSession>> {
+    static SESSION: OnceLock<Mutex<Option<AuthenticatedSession>>> = OnceLock::new();
+    SESSION.get_or_init(|| Mutex::new(None))
+}
+
+fn establish_session(library_path: &Path, database_key: [u8; KEY_BYTES]) {
+    *active_session()
+        .lock()
+        .expect("library session mutex poisoned") = Some(AuthenticatedSession {
+        library_path: library_path.to_path_buf(),
+        database_key,
+    });
+}
+
+pub fn lock_library() {
+    *active_session()
+        .lock()
+        .expect("library session mutex poisoned") = None;
+}
+
+pub fn with_catalogue<T, E: From<SetupLibraryError>>(
+    callback: impl FnOnce(&Connection, &Path) -> Result<T, E>,
+) -> Result<T, E> {
+    let guard = active_session().lock().map_err(|_| {
+        E::from(SetupLibraryError::new(
+            "library_locked",
+            "The protected library is locked. Unlock it before reviewing media.",
+        ))
+    })?;
+    let session = guard.as_ref().ok_or_else(|| {
+        E::from(SetupLibraryError::new(
+            "library_locked",
+            "The protected library is locked. Unlock it before reviewing media.",
+        ))
+    })?;
+    validate_existing_library(&session.library_path).map_err(E::from)?;
+    let connection = Connection::open(session.library_path.join(STATE_DIR).join(DATABASE_FILE))
+        .map_err(|_| {
+            E::from(SetupLibraryError::new(
+                "library_locked",
+                "The protected library is unavailable. Unlock it again before reviewing media.",
+            ))
+        })?;
+    connection
+        .pragma_update(
+            None,
+            "key",
+            format!("x'{}'", hex::encode(session.database_key)),
+        )
+        .map_err(|_| {
+            E::from(SetupLibraryError::new(
+                "library_locked",
+                "The protected library is locked. Unlock it before reviewing media.",
+            ))
+        })?;
+    callback(&connection, &session.library_path)
+}
+
 pub fn setup_library(
     request: SetupLibraryRequest,
 ) -> Result<SetupLibraryResult, SetupLibraryError> {
@@ -158,7 +229,7 @@ pub fn setup_library(
         let mut database_key = [0_u8; KEY_BYTES];
         OsRng.fill_bytes(&mut database_key);
         let marker = LibraryMarker {
-            format_version: FORMAT_VERSION,
+            format_version: MARKER_FORMAT_VERSION,
             password_wrap: wrap_key(&database_key, &request.password)?,
             recovery_wrap: wrap_key(&database_key, &request.recovery_answer)?,
             recovery_question: request.recovery_question.trim().to_owned(),
@@ -172,7 +243,7 @@ pub fn setup_library(
                 format!("Could not write library marker: {error}"),
             )
         })?;
-        database_key.fill(0);
+        establish_session(&folder, database_key);
         fs::rename(&temporary_state_dir, &state_dir).map_err(|error| {
             SetupLibraryError::new(
                 "initialization_failed",
@@ -242,7 +313,8 @@ pub fn remember_library_path(app_data_dir: &Path, folder: &str) -> Result<(), Se
             format!("Could not save the selected library: {error}"),
         )
     })?;
-    let pointer = serde_json::json!({ "format_version": FORMAT_VERSION, "folder_path": folder });
+    let pointer =
+        serde_json::json!({ "format_version": MARKER_FORMAT_VERSION, "folder_path": folder });
     let temporary_pointer = app_data_dir.join(format!(
         "{LIBRARY_POINTER_FILE}.pending-{}",
         random_suffix()
@@ -281,7 +353,7 @@ pub fn read_remembered_library_path(app_data_dir: &Path) -> Result<String, Setup
             "The remembered library location is invalid.",
         )
     })?;
-    if pointer.format_version != FORMAT_VERSION || pointer.folder_path.trim().is_empty() {
+    if pointer.format_version != MARKER_FORMAT_VERSION || pointer.folder_path.trim().is_empty() {
         return Err(SetupLibraryError::new(
             "library_pointer_invalid",
             "The remembered library location is invalid.",
@@ -327,11 +399,9 @@ pub fn unlock_library(
     }
     let folder = PathBuf::from(folder_path.trim());
     let marker = validate_existing_library(&folder)?;
-    let mut database_key = unwrap_key(&marker.password_wrap, &request.password)?;
-    let database_result =
-        validate_catalogue(&folder.join(STATE_DIR).join(DATABASE_FILE), &database_key);
-    database_key.fill(0);
-    database_result?;
+    let database_key = unwrap_key(&marker.password_wrap, &request.password)?;
+    validate_catalogue(&folder.join(STATE_DIR).join(DATABASE_FILE), &database_key)?;
+    establish_session(&folder, database_key);
     Ok(UnlockLibraryResult {
         folder_path: folder.display().to_string(),
         message: "Protected library unlocked. Your media files remain unchanged.".to_owned(),
@@ -369,12 +439,12 @@ pub fn reset_library_password(
     }
     let folder = PathBuf::from(folder_path.trim());
     let mut marker = validate_existing_library(&folder)?;
-    let mut database_key = unwrap_key(&marker.recovery_wrap, &request.recovery_answer)?;
+    let database_key = unwrap_key(&marker.recovery_wrap, &request.recovery_answer)?;
     validate_catalogue(&folder.join(STATE_DIR).join(DATABASE_FILE), &database_key)?;
     let password_wrap = wrap_key(&database_key, &request.new_password)?;
-    database_key.fill(0);
     marker.password_wrap = password_wrap;
     write_marker(&folder.join(STATE_DIR), &marker)?;
+    establish_session(&folder, database_key);
     Ok(UnlockLibraryResult {
         folder_path: folder.display().to_string(),
         message:
@@ -536,7 +606,7 @@ fn initialize_catalogue(
                 format!("Could not encrypt catalogue: {error}"),
             )
         })?;
-    connection.execute_batch("BEGIN IMMEDIATE; CREATE TABLE schema_migrations (version INTEGER NOT NULL); INSERT INTO schema_migrations (version) VALUES (1); CREATE TABLE library_identity (id INTEGER PRIMARY KEY CHECK (id = 1), format_version INTEGER NOT NULL); INSERT INTO library_identity (id, format_version) VALUES (1, 1); COMMIT;")
+    connection.execute_batch("BEGIN IMMEDIATE; CREATE TABLE schema_migrations (version INTEGER NOT NULL); INSERT INTO schema_migrations (version) VALUES (2); CREATE TABLE library_identity (id INTEGER PRIMARY KEY CHECK (id = 1), format_version INTEGER NOT NULL); INSERT INTO library_identity (id, format_version) VALUES (1, 2); CREATE TABLE review_sessions (id INTEGER PRIMARY KEY, source_path TEXT NOT NULL UNIQUE, state TEXT NOT NULL CHECK (state IN ('active', 'complete')), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); CREATE TABLE review_candidates (id INTEGER PRIMARY KEY, session_id INTEGER NOT NULL REFERENCES review_sessions(id), relative_path TEXT NOT NULL, file_size INTEGER NOT NULL, modified_at INTEGER NOT NULL, media_type TEXT NOT NULL, decision TEXT NULL CHECK (decision IN ('imported', 'skipped')), UNIQUE(session_id, relative_path)); CREATE TABLE tags (id INTEGER PRIMARY KEY, normalized_name TEXT NOT NULL UNIQUE); CREATE TABLE candidate_tags (candidate_id INTEGER NOT NULL REFERENCES review_candidates(id), tag_id INTEGER NOT NULL REFERENCES tags(id), PRIMARY KEY(candidate_id, tag_id)); CREATE TABLE item_decisions (candidate_id INTEGER PRIMARY KEY REFERENCES review_candidates(id), decision TEXT NOT NULL CHECK (decision IN ('imported', 'skipped')), decided_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, destination_path TEXT NULL); COMMIT;")
         .map_err(|error| SetupLibraryError::new("initialization_failed", format!("Could not initialize catalogue schema: {error}")))?;
     Ok(())
 }
@@ -567,7 +637,7 @@ fn validate_existing_library(folder: &Path) -> Result<LibraryMarker, SetupLibrar
             "This folder has an invalid Photo Handler marker.",
         )
     })?;
-    if marker.format_version != FORMAT_VERSION {
+    if marker.format_version != MARKER_FORMAT_VERSION {
         return Err(SetupLibraryError::new(
             "library_version_unsupported",
             "This Photo Handler library uses an unsupported version.",
@@ -605,17 +675,19 @@ fn validate_catalogue(
             |row| row.get(0),
         )
         .map_err(|_| incorrect_credential_error())?;
-    if version != identity_version || version > FORMAT_VERSION {
+    if version != identity_version || version > CATALOGUE_FORMAT_VERSION {
         return Err(SetupLibraryError::new(
             "library_version_unsupported",
             "This Photo Handler library uses an unsupported schema version.",
         ));
     }
-    if version == 0 {
+    if version < CATALOGUE_FORMAT_VERSION {
+        transaction.execute_batch("CREATE TABLE IF NOT EXISTS review_sessions (id INTEGER PRIMARY KEY, source_path TEXT NOT NULL UNIQUE, state TEXT NOT NULL CHECK (state IN ('active', 'complete')), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); CREATE TABLE IF NOT EXISTS review_candidates (id INTEGER PRIMARY KEY, session_id INTEGER NOT NULL REFERENCES review_sessions(id), relative_path TEXT NOT NULL, file_size INTEGER NOT NULL, modified_at INTEGER NOT NULL, media_type TEXT NOT NULL, decision TEXT NULL CHECK (decision IN ('imported', 'skipped')), UNIQUE(session_id, relative_path)); CREATE TABLE IF NOT EXISTS tags (id INTEGER PRIMARY KEY, normalized_name TEXT NOT NULL UNIQUE); CREATE TABLE IF NOT EXISTS candidate_tags (candidate_id INTEGER NOT NULL REFERENCES review_candidates(id), tag_id INTEGER NOT NULL REFERENCES tags(id), PRIMARY KEY(candidate_id, tag_id)); CREATE TABLE IF NOT EXISTS item_decisions (candidate_id INTEGER PRIMARY KEY REFERENCES review_candidates(id), decision TEXT NOT NULL CHECK (decision IN ('imported', 'skipped')), decided_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, destination_path TEXT NULL);")
+            .map_err(|_| SetupLibraryError::new("library_migration_failed", "Could not migrate the protected library catalogue."))?;
         transaction
             .execute(
                 "UPDATE schema_migrations SET version = ?1",
-                [FORMAT_VERSION],
+                [CATALOGUE_FORMAT_VERSION],
             )
             .map_err(|_| {
                 SetupLibraryError::new(
@@ -626,7 +698,7 @@ fn validate_catalogue(
         transaction
             .execute(
                 "UPDATE library_identity SET format_version = ?1 WHERE id = 1",
-                [FORMAT_VERSION],
+                [CATALOGUE_FORMAT_VERSION],
             )
             .map_err(|_| {
                 SetupLibraryError::new(
@@ -907,14 +979,14 @@ mod tests {
             })
             .unwrap();
         key.fill(0);
-        assert_eq!(version, FORMAT_VERSION);
+        assert_eq!(version, CATALOGUE_FORMAT_VERSION);
     }
 
     #[test]
     fn newer_catalogue_schema_is_rejected_without_mutation() {
         let directory = tempdir().unwrap();
         setup_library(request(directory.path())).unwrap();
-        update_catalogue_versions(directory.path(), FORMAT_VERSION + 1);
+        update_catalogue_versions(directory.path(), CATALOGUE_FORMAT_VERSION + 1);
         let database = directory.path().join(STATE_DIR).join(DATABASE_FILE);
         let before = fs::read(&database).unwrap();
 

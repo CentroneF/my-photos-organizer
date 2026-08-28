@@ -1,5 +1,23 @@
 mod import_source;
 mod library;
+mod review;
+
+#[tauri::command]
+fn start_review(
+    request: import_source::SaveImportSourceRequest,
+) -> Result<review::ReviewState, review::ReviewError> {
+    review::start_review(&request.folder_path)
+}
+
+#[tauri::command]
+fn current_review_state() -> Result<review::ReviewState, review::ReviewError> {
+    review::current_review_state()
+}
+
+#[tauri::command]
+fn lock_library() {
+    library::lock_library();
+}
 
 #[tauri::command]
 fn save_import_source(
@@ -152,10 +170,15 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_persisted_scope::init())
         .invoke_handler(tauri::generate_handler![
             inspect_library_folder,
             save_import_source,
             remembered_import_source,
+            start_review,
+            current_review_state,
+            lock_library,
             setup_library,
             remembered_library,
             unlock_library,

@@ -232,14 +232,14 @@ Advance the catalogue schema version transactionally from the existing version-1
 
 #### Automated
 
-- [ ] 1.1 Add the authenticated catalogue session and transactional review schema
-- [ ] 1.2 Add safe recursive discovery and review-session commands
-- [ ] 1.3 Add the library-home start, resume, and change-folder review entry states
-- [ ] 1.4 Verify workspace tests, compilation, source preservation, and overlap rejection
+- [x] 1.1 Add the authenticated catalogue session and transactional review schema
+- [x] 1.2 Add safe recursive discovery and review-session commands
+- [x] 1.3 Add the library-home start, resume, and change-folder review entry states
+- [x] 1.4 Verify workspace tests, compilation, source preservation, and overlap rejection
 
 #### Manual
 
-- [ ] 1.5 Confirm desktop session start, restart resume, folder change, and safe invalid-source states
+- [x] 1.5 Confirm desktop session start, restart resume, folder change, and safe invalid-source states
 
 ### Phase 2: Review, tag, import, and skip media
 
