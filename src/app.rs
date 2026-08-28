@@ -776,17 +776,11 @@ pub fn App() -> Element {
         }
     };
 
-    let step_one_class = if step() == "folder" {
-        "progress-dot active"
+    let is_onboarding = matches!(step().as_str(), "loading" | "folder" | "stale");
+    let shell_class = if is_onboarding {
+        "app-shell"
     } else {
-        "progress-dot done"
-    };
-    let step_two_class = if step() == "new" {
-        "progress-dot active"
-    } else if step() == "home" {
-        "progress-dot done"
-    } else {
-        "progress-dot"
+        "app-shell selected-library-workspace"
     };
     let review_date_origin = review_item()
         .date_origin
@@ -795,30 +789,25 @@ pub fn App() -> Element {
 
     rsx! {
         link { rel: "stylesheet", href: CSS }
-        main { class: "app-shell",
-            aside { class: "brand-panel",
+        main { class: "{shell_class}",
+            if is_onboarding {
+                aside { class: "brand-panel",
                 div { class: "brand-mark", "PH" }
                 div {
                     p { class: "eyebrow", "PHOTO HANDLER" }
                     h1 { "Your memories, indexed privately." }
                     p { class: "brand-copy", "A local catalogue that keeps every original exactly where you put it." }
                 }
-                ul { class: "trust-list",
-                    li { span { "01" } "Your files stay on this device" }
-                    li { span { "02" } "Original media is never moved" }
-                    li { span { "03" } "Your catalogue is encrypted" }
+                    ul { class: "trust-list",
+                        li { span { "01" } "Your files stay on this device" }
+                        li { span { "02" } "Original media is never moved" }
+                        li { span { "03" } "Your catalogue is encrypted" }
+                    }
                 }
             }
             section { class: "flow-panel",
                 div { class: "flow-wrap",
-                    div { class: "progress-row",
-                        span { class: step_one_class, "1" }
-                        div { class: "progress-line" }
-                        span { class: step_two_class, "2" }
-                    }
-
                     if step() == "folder" {
-                        p { class: "step-label", "STEP 1 OF 2" }
                         h2 { "Where should your library live?" }
                         p { class: "lede", "Start by choosing a folder. We’ll inspect it without changing anything, then guide you to the right next step." }
                         button { class: "folder-picker", r#type: "button", onclick: choose_folder, disabled: busy(),
@@ -831,7 +820,6 @@ pub fn App() -> Element {
                         h2 { "Finding your protected library…" }
                         p { class: "lede", "We are checking only the remembered local library location." }
                     } else if step() == "new" {
-                        p { class: "step-label", "STEP 2 OF 2" }
                         h2 { "Protect your new library" }
                         p { class: "lede", "This folder has no Photo Handler configuration yet. Add protection details to create one." }
                         div { class: "folder-summary", span { "Selected folder" } strong { "{folder}" } button { r#type: "button", onclick: choose_another, "Change" } }

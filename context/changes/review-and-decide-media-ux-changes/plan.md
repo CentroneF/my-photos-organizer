@@ -214,12 +214,12 @@ No catalogue or preference migration is required. The danger-page route is trans
 
 #### Automated
 
-- [ ] 1.1 Implement the view-state-driven selected-library workspace and remove multi-step presentation
-- [ ] 1.2 Verify workspace compilation and absence of removed stepper artifacts
+- [x] 1.1 Implement the view-state-driven selected-library workspace and remove multi-step presentation
+- [x] 1.2 Verify workspace compilation and absence of removed stepper artifacts
 
 #### Manual
 
-- [ ] 1.3 Confirm selected-library workspace transitions and retained onboarding states
+- [x] 1.3 Confirm selected-library workspace transitions and retained onboarding states
 
 ### Phase 2: Simplify library-home actions and isolate cleanup
 

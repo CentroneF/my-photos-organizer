@@ -14,6 +14,7 @@ button { cursor: pointer; }
 button:disabled { cursor: wait; opacity: .65; }
 
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: minmax(18rem, 38%) 1fr; background: #f7f4ee; }
+.app-shell.selected-library-workspace { display: block; }
 .brand-panel { min-height: 100vh; padding: clamp(2rem, 5vw, 5rem); display: flex; flex-direction: column; justify-content: space-between; color: #f9f6ef; background: radial-gradient(circle at 15% 10%, #445284 0, transparent 34%), linear-gradient(145deg, #202b52 0%, #141b36 72%); }
 .brand-mark { width: 3rem; height: 3rem; display: grid; place-items: center; border-radius: 1rem; color: #17213b; background: #f2c572; font-size: .78rem; font-weight: 900; letter-spacing: .08em; }
 .eyebrow, .step-label { margin: 0 0 1rem; color: #b2b9dd; font-size: .72rem; font-weight: 800; letter-spacing: .18em; }
@@ -25,11 +26,6 @@ button:disabled { cursor: wait; opacity: .65; }
 
 .flow-panel { min-height: 100vh; display: grid; place-items: center; padding: clamp(2rem, 7vw, 7rem); }
 .flow-wrap { width: min(100%, 42rem); }
-.progress-row { width: 7rem; display: flex; align-items: center; margin-bottom: 3.2rem; }
-.progress-dot { width: 1.75rem; height: 1.75rem; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid #c9c6bd; border-radius: 50%; color: #98958e; font-size: .72rem; font-weight: 800; }
-.progress-dot.active { border-color: #5b55a5; color: #fff; background: #5b55a5; }
-.progress-dot.done { border-color: #f2c572; color: #17213b; background: #f2c572; }
-.progress-line { width: 100%; height: 1px; background: #d9d5cc; }
 .step-label { color: #6a64ad; }
 .success-label { color: #24776a; }
 .flow-panel h2 { margin: 0; color: #17213b; font-family: Georgia, "Times New Roman", serif; font-size: clamp(2.25rem, 4vw, 3.8rem); font-weight: 500; line-height: 1.05; letter-spacing: -.035em; }

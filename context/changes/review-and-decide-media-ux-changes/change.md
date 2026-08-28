@@ -1,7 +1,7 @@
 ---
 change_id: review-and-decide-media-ux-changes
 title: Review and decide media UX changes
-status: planned
+status: implementing
 created: 2026-08-28
 updated: 2026-08-28
 archived_at: null
