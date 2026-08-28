@@ -781,6 +781,16 @@ pub fn App() -> Element {
         .date_origin
         .clone()
         .unwrap_or_else(|| "unavailable".into());
+    let flow_panel_class = if step() == "review" {
+        "flow-panel review-flow-panel"
+    } else {
+        "flow-panel"
+    };
+    let flow_wrap_class = if step() == "review" {
+        "flow-wrap review-flow-wrap"
+    } else {
+        "flow-wrap"
+    };
 
     rsx! {
         link { rel: "stylesheet", href: CSS }
@@ -800,8 +810,8 @@ pub fn App() -> Element {
                     }
                 }
             }
-            section { class: "flow-panel",
-                div { class: "flow-wrap",
+            section { class: "{flow_panel_class}",
+                div { class: "{flow_wrap_class}",
                     if step() == "folder" {
                         h2 { "Where should your library live?" }
                         p { class: "lede", "Start by choosing a folder. We’ll inspect it without changing anything, then guide you to the right next step." }
@@ -923,18 +933,24 @@ pub fn App() -> Element {
                             h2 { "Decide on this item." }
                             p { class: "lede", "Every choice is explicit. Import creates a copy; Skip leaves the original exactly where it is." }
                             div { class: "review-card",
-                                div { class: "review-context", strong { "{review_item().filename.clone().unwrap_or_default()}" } small { "{review_item().relative_path.clone().unwrap_or_default()}" } }
-                                if review_item().state == "item" {
-                                    if review_item().media_type.as_deref() == Some("video") {
-                                        video { class: "media-preview", controls: true, src: "{review_item().preview_url.clone().unwrap_or_default()}", onerror: move |_| error.set("This video cannot be played by the embedded browser. Its details remain available and it was not decided automatically; try another supported desktop codec or Skip explicitly.".into()) }
+                                div { class: "review-media-panel",
+                                    if review_item().state == "item" {
+                                        if review_item().media_type.as_deref() == Some("video") {
+                                            video { class: "media-preview", controls: true, src: "{review_item().preview_url.clone().unwrap_or_default()}", onerror: move |_| error.set("This video cannot be played by the embedded browser. Its details remain available and it was not decided automatically; try another supported desktop codec or Skip explicitly.".into()) }
+                                        } else {
+                                            img { class: "media-preview", src: "{review_item().preview_url.clone().unwrap_or_default()}", alt: "Preview of {review_item().filename.clone().unwrap_or_default()}" }
+                                        }
                                     } else {
-                                        img { class: "media-preview", src: "{review_item().preview_url.clone().unwrap_or_default()}", alt: "Preview of {review_item().filename.clone().unwrap_or_default()}" }
+                                        p { class: "error-message", role: "alert", "{review_item().message}" }
                                     }
-                                } else { p { class: "error-message", role: "alert", "{review_item().message}" } }
-                                label { class: "review-field", "Tags (comma-separated)" input { value: "{review_tags}", oninput: move |event| review_tags.set(event.value()), placeholder: "Family, summer" } }
-                                label { class: "review-field", "Import date" input { r#type: "date", value: "{import_date}", oninput: move |event| import_date.set(event.value()) } }
-                                p { class: "privacy-note", "Date source: {review_date_origin}. {review_item().message}" }
-                                div { class: "decision-actions", button { class: "secondary-button", r#type: "button", onclick: skip_item, disabled: busy(), "Skip" } button { class: "primary-button", r#type: "button", onclick: import_item, disabled: busy() || review_item().state != "item", if busy() { "Saving decision…" } else { "Import copy" } } }
+                                }
+                                div { class: "review-details",
+                                    div { class: "review-context", strong { "{review_item().filename.clone().unwrap_or_default()}" } small { "{review_item().relative_path.clone().unwrap_or_default()}" } }
+                                    label { class: "review-field", "Tags (comma-separated)" input { value: "{review_tags}", oninput: move |event| review_tags.set(event.value()), placeholder: "Family, summer" } }
+                                    label { class: "review-field", "Import date" input { r#type: "date", value: "{import_date}", oninput: move |event| import_date.set(event.value()) } }
+                                    p { class: "privacy-note", "Date source: {review_date_origin}. {review_item().message}" }
+                                    div { class: "decision-actions", button { class: "secondary-button", r#type: "button", onclick: skip_item, disabled: busy(), "Skip" } button { class: "primary-button", r#type: "button", onclick: import_item, disabled: busy() || review_item().state != "item", if busy() { "Saving decision…" } else { "Import copy" } } }
+                                }
                             }
                         } else if review_item().state == "complete" {
                             h2 { "Review complete." }
@@ -958,6 +974,26 @@ pub fn App() -> Element {
                     if !error().is_empty() { p { class: "error-message", role: "alert", "{error}" } }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod review_layout_tests {
+    const STYLES: &str = include_str!("../assets/styles.css");
+
+    #[test]
+    fn review_preview_is_bounded_by_the_viewport_and_keeps_aspect_ratio() {
+        for selector in [
+            ".review-flow-panel { height: 100dvh; min-height: 0;",
+            ".review-flow-wrap { width: min(100%, 42rem); height: 100%; min-height: 0; display: flex; flex-direction: column; }",
+            ".review-card { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(18rem, 1fr);",
+            ".review-media-panel { min-width: 0; min-height: 0; display: flex;",
+            ".review-details { min-width: 0; display: flex; flex-direction: column; gap: 1rem;",
+            ".media-preview { display: block; width: 100%; max-width: 100%; height: 100%; max-height: 100%;",
+            "object-fit: contain;",
+        ] {
+            assert!(STYLES.contains(selector), "missing review layout rule: {selector}");
         }
     }
 }

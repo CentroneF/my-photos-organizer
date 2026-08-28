@@ -225,21 +225,21 @@ No catalogue or preference migration is required. The danger-page route is trans
 
 #### Automated
 
-- [x] 2.1 Add and test the native active-library folder opener
-- [x] 2.2 Implement home action hierarchy, no-manual-lock UI, and dedicated danger page
-- [x] 2.3 Verify workspace tests and command-contract compilation
+- [x] 2.1 Add and test the native active-library folder opener — e2ab287
+- [x] 2.2 Implement home action hierarchy, no-manual-lock UI, and dedicated danger page — e2ab287
+- [x] 2.3 Verify workspace tests and command-contract compilation — e2ab287
 
 #### Manual
 
-- [x] 2.4 Confirm Finder/Explorer folder opening and standalone danger-zone navigation
+- [x] 2.4 Confirm Finder/Explorer folder opening and standalone danger-zone navigation — e2ab287
 
 ### Phase 3: Keep the complete review card in the viewport
 
 #### Automated
 
-- [ ] 3.1 Implement viewport-bounded review-card and media-preview layout
-- [ ] 3.2 Verify compilation and the review layout contract
+- [x] 3.1 Implement viewport-bounded review-card and media-preview layout
+- [x] 3.2 Verify compilation and the review layout contract
 
 #### Manual
 
-- [ ] 3.3 Confirm no-scroll review cards for tall/wide images and video at minimum window size
+- [x] 3.3 Confirm no-scroll review cards for tall/wide images and video at minimum window size
