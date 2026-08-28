@@ -119,6 +119,18 @@ pub fn remembered_import_source(
     })
 }
 
+pub fn clear_remembered_import_source(app_data_dir: &Path) -> Result<(), ImportSourceError> {
+    let pointer = app_data_dir.join(IMPORT_SOURCE_POINTER_FILE);
+    match fs::remove_file(pointer) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(ImportSourceError::new(
+            "settings_unavailable",
+            format!("Could not clear the remembered import folder: {error}"),
+        )),
+    }
+}
+
 fn read_import_source_pointer(app_data_dir: &Path) -> Result<String, ImportSourceError> {
     let bytes = fs::read(app_data_dir.join(IMPORT_SOURCE_POINTER_FILE)).map_err(|_| {
         ImportSourceError::new(

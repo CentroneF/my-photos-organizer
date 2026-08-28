@@ -13,6 +13,8 @@ use rand::{rngs::OsRng, RngCore};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
+use crate::import_source;
+
 const STATE_DIR: &str = ".photo-handler";
 const MARKER_FILE: &str = "library.json";
 const DATABASE_FILE: &str = "catalogue.db";
@@ -93,6 +95,19 @@ pub struct RememberedLibraryResult {
 #[serde(rename_all = "camelCase")]
 pub struct UnlockLibraryResult {
     pub folder_path: String,
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanLibraryRequest {
+    pub password: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanLibraryResult {
+    pub moved_folder_count: usize,
     pub message: String,
 }
 
@@ -177,6 +192,65 @@ pub fn lock_library() {
     *active_session()
         .lock()
         .expect("library session mutex poisoned") = None;
+}
+
+pub fn clean_library(
+    mut request: CleanLibraryRequest,
+    app_data_dir: &Path,
+) -> Result<CleanLibraryResult, SetupLibraryError> {
+    if request.password.is_empty() {
+        return Err(SetupLibraryError::new(
+            "missing_password",
+            "Enter your current library password to clean managed copies.",
+        ));
+    }
+
+    let result = with_catalogue(|connection, library_path| {
+        let marker = validate_existing_library(library_path)?;
+        let mut verified_key = unwrap_key(&marker.password_wrap, &request.password)?;
+        verified_key.fill(0);
+        request.password.clear();
+
+        let targets = managed_media_folders(library_path)?;
+        for target in &targets {
+            trash::delete(target).map_err(|error| {
+                SetupLibraryError::new(
+                    "cleanup_incomplete",
+                    format!(
+                        "Could not move {} to the operating system Trash. Review data was kept so you can retry. ({error})",
+                        target.display()
+                    ),
+                )
+            })?;
+        }
+
+        let transaction = connection.unchecked_transaction().map_err(|error| {
+            SetupLibraryError::new(
+                "cleanup_failed",
+                format!("Could not clear review data: {error}"),
+            )
+        })?;
+        transaction
+            .execute_batch(
+                "DELETE FROM candidate_tags; DELETE FROM tags; DELETE FROM item_decisions; DELETE FROM review_candidates; DELETE FROM review_sessions;",
+            )
+            .map_err(|error| SetupLibraryError::new("cleanup_failed", format!("Could not clear review data: {error}")))?;
+        transaction.commit().map_err(|error| {
+            SetupLibraryError::new(
+                "cleanup_failed",
+                format!("Could not clear review data: {error}"),
+            )
+        })?;
+        import_source::clear_remembered_import_source(app_data_dir)
+            .map_err(|error| SetupLibraryError::new(error.code, error.message))?;
+
+        Ok(CleanLibraryResult {
+            moved_folder_count: targets.len(),
+            message: "Managed date folders were moved to the operating system Trash. Review history and the remembered import folder were cleared; protected library setup remains unlocked.".into(),
+        })
+    });
+    request.password.clear();
+    result
 }
 
 pub fn with_catalogue<T, E: From<SetupLibraryError>>(
@@ -661,6 +735,96 @@ fn validate_existing_library(folder: &Path) -> Result<LibraryMarker, SetupLibrar
     Ok(marker)
 }
 
+fn managed_media_folders(library_path: &Path) -> Result<Vec<PathBuf>, SetupLibraryError> {
+    let entries = fs::read_dir(library_path).map_err(|error| {
+        SetupLibraryError::new(
+            "library_unavailable",
+            format!("Could not inspect the protected library: {error}"),
+        )
+    })?;
+    let mut targets = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            SetupLibraryError::new(
+                "library_unavailable",
+                format!("Could not inspect the protected library: {error}"),
+            )
+        })?;
+        if entry.file_name() == STATE_DIR {
+            continue;
+        }
+        let kind = entry.file_type().map_err(|error| {
+            SetupLibraryError::new(
+                "library_unavailable",
+                format!("Could not inspect the protected library: {error}"),
+            )
+        })?;
+        if !kind.is_dir() || kind.is_symlink() || !is_year_name(&entry.file_name()) {
+            continue;
+        }
+        let path = entry.path();
+        let date_folders = managed_date_folders(&path)?;
+        if !date_folders.is_empty() {
+            targets.extend(date_folders);
+        }
+    }
+    targets.sort();
+    Ok(targets)
+}
+
+fn is_year_name(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    name.len() == 4 && name.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn managed_date_folders(path: &Path) -> Result<Vec<PathBuf>, SetupLibraryError> {
+    let entries = fs::read_dir(path).map_err(|error| {
+        SetupLibraryError::new(
+            "library_unavailable",
+            format!("Could not inspect a managed-media folder: {error}"),
+        )
+    })?;
+    let mut date_folders = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            SetupLibraryError::new(
+                "library_unavailable",
+                format!("Could not inspect a managed-media folder: {error}"),
+            )
+        })?;
+        let kind = entry.file_type().map_err(|error| {
+            SetupLibraryError::new(
+                "library_unavailable",
+                format!("Could not inspect a managed-media folder: {error}"),
+            )
+        })?;
+        if kind.is_file() && entry.file_name() == ".DS_Store" {
+            continue;
+        }
+        if !kind.is_dir() || kind.is_symlink() || !is_date_folder_name(&entry.file_name()) {
+            return Ok(Vec::new());
+        }
+        date_folders.push(entry.path());
+    }
+    Ok(date_folders)
+}
+
+fn is_date_folder_name(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    name.len() == 10
+        && name.as_bytes()[4] == b'-'
+        && name.as_bytes()[7] == b'-'
+        && name
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+        && chrono::NaiveDate::parse_from_str(name, "%Y-%m-%d").is_ok()
+}
+
 fn validate_catalogue(
     path: &Path,
     database_key: &[u8; KEY_BYTES],
@@ -1109,5 +1273,69 @@ mod tests {
             .code,
             "library_version_unsupported"
         );
+    }
+
+    #[test]
+    fn managed_media_classification_ignores_finder_metadata_but_rejects_other_content() {
+        let library = tempdir().unwrap();
+        let managed_year = library.path().join("2026");
+        fs::create_dir(&managed_year).unwrap();
+        fs::create_dir(managed_year.join("2026-08-28")).unwrap();
+        fs::write(managed_year.join("2026-08-28").join("copy.jpg"), b"copy").unwrap();
+        fs::write(managed_year.join(".DS_Store"), b"finder metadata").unwrap();
+
+        let mixed_year = library.path().join("2025");
+        fs::create_dir(&mixed_year).unwrap();
+        fs::create_dir(mixed_year.join("2025-01-01")).unwrap();
+        fs::write(mixed_year.join("notes.txt"), b"preserve").unwrap();
+        fs::create_dir(library.path().join("not-a-year")).unwrap();
+
+        assert_eq!(
+            managed_media_folders(library.path()).unwrap(),
+            vec![managed_year.join("2026-08-28")]
+        );
+    }
+
+    #[test]
+    fn clean_library_rejects_locked_and_wrong_password_without_changing_media() {
+        let _session_guard = test_session_guard();
+        let library = tempdir().unwrap();
+        let settings = tempdir().unwrap();
+        setup_library(request(library.path())).unwrap();
+        let managed_year = library.path().join("2026");
+        fs::create_dir(&managed_year).unwrap();
+        fs::create_dir(managed_year.join("2026-08-28")).unwrap();
+
+        lock_library();
+        assert_eq!(
+            clean_library(
+                CleanLibraryRequest {
+                    password: "correct horse battery staple".into(),
+                },
+                settings.path(),
+            )
+            .unwrap_err()
+            .code,
+            "library_locked"
+        );
+        assert!(managed_year.exists());
+
+        unlock_library(
+            &library.path().display().to_string(),
+            unlock_request("correct horse battery staple"),
+        )
+        .unwrap();
+        assert_eq!(
+            clean_library(
+                CleanLibraryRequest {
+                    password: "wrong password".into(),
+                },
+                settings.path(),
+            )
+            .unwrap_err()
+            .code,
+            "incorrect_credentials"
+        );
+        assert!(managed_year.exists());
     }
 }

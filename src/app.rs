@@ -183,6 +183,17 @@ struct ResetInvokeArgs<'a> {
     request: ResetRequest<'a>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CleanLibraryRequest<'a> {
+    password: &'a str,
+}
+
+#[derive(Serialize)]
+struct CleanLibraryInvokeArgs<'a> {
+    request: CleanLibraryRequest<'a>,
+}
+
 fn command_error(value: JsValue, fallback: &str) -> String {
     serde_wasm_bindgen::from_value::<CommandError>(value)
         .map(|error| error.message)
@@ -228,6 +239,8 @@ pub fn App() -> Element {
     let mut show_recovery = use_signal(|| false);
     let mut new_password = use_signal(String::new);
     let mut new_confirmation = use_signal(String::new);
+    let mut clean_password = use_signal(String::new);
+    let mut show_clean_confirmation = use_signal(|| false);
 
     use_effect(move || {
         spawn(async move {
@@ -548,6 +561,65 @@ pub fn App() -> Element {
         }
     };
 
+    let cancel_clean = move |_| {
+        clean_password.set(String::new());
+        show_clean_confirmation.set(false);
+        error.set(String::new());
+    };
+
+    let clean_library = move |event: FormEvent| async move {
+        event.prevent_default();
+        error.set(String::new());
+        busy.set(true);
+        let entered_password = clean_password();
+        let result = serde_wasm_bindgen::to_value(&CleanLibraryInvokeArgs {
+            request: CleanLibraryRequest {
+                password: &entered_password,
+            },
+        })
+        .map_err(|_| JsValue::NULL)
+        .and_then(Ok);
+        let result = match result {
+            Ok(args) => invoke("clean_library", args).await,
+            Err(value) => Err(value),
+        };
+        busy.set(false);
+        clean_password.set(String::new());
+        match result {
+            Ok(_) => {
+                import_source.set(ImportSource {
+                    state: "missing".into(),
+                    folder_path: None,
+                });
+                review_state.set(ReviewState {
+                    state: "none".into(),
+                    source_path: None,
+                    candidate_count: 0,
+                    message: String::new(),
+                });
+                review_item.set(ReviewItem {
+                    state: "empty".into(),
+                    candidate_id: None,
+                    relative_path: None,
+                    filename: None,
+                    media_type: None,
+                    effective_import_date: None,
+                    date_origin: None,
+                    tags: vec![],
+                    preview_url: None,
+                    imported_count: 0,
+                    skipped_count: 0,
+                    message: String::new(),
+                });
+                show_clean_confirmation.set(false);
+            }
+            Err(value) => error.set(command_error(
+                value,
+                "Could not clean managed media. Nothing outside eligible managed date folders was changed.",
+            )),
+        }
+    };
+
     let create = move |event: FormEvent| async move {
         event.prevent_default();
         error.set(String::new());
@@ -844,6 +916,24 @@ pub fn App() -> Element {
                                 span { class: "folder-icon", "⌑" }
                                 span { strong { if busy() { "Saving import folder…" } else { "Choose import folder" } } small { "Any folder is allowed except your protected library" } }
                                 span { class: "arrow", "→" }
+                            }
+                        }
+                        if show_clean_confirmation() {
+                            form { class: "setup-form", onsubmit: clean_library,
+                                p { class: "step-label", "DANGER ZONE" }
+                                h3 { "Clean managed debug media" }
+                                p { class: "lede", "Eligible managed date folders will be moved to your operating system Trash. This clears review history and the remembered import folder." }
+                                p { class: "privacy-note", "Original source media, .photo-handler, and unrelated content in this library are preserved." }
+                                label { "Current library password" input { r#type: "password", autocomplete: "current-password", value: "{clean_password}", oninput: move |event| clean_password.set(event.value()) } }
+                                button { class: "primary-button", r#type: "submit", disabled: busy(), if busy() { "Cleaning managed media…" } else { "Move managed copies to Trash" } }
+                                button { class: "secondary-button", r#type: "button", onclick: cancel_clean, disabled: busy(), "Cancel" }
+                            }
+                        } else {
+                            div { class: "folder-summary",
+                                span { "Debug maintenance" }
+                                strong { "Clean managed copies" }
+                                p { class: "privacy-note", "Moves only managed date folders to Trash. Originals and protected setup stay unchanged." }
+                                button { r#type: "button", onclick: move |_| { error.set(String::new()); show_clean_confirmation.set(true); }, disabled: busy(), "Open danger zone" }
                             }
                         }
                     } else if step() == "review" {

@@ -1,7 +1,7 @@
 ---
 change_id: clean-library-for-debug
 title: Clean library for debug
-status: planned
+status: implementing
 created: 2026-08-28
 updated: 2026-08-28
 archived_at: null
