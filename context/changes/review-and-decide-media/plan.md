@@ -232,26 +232,26 @@ Advance the catalogue schema version transactionally from the existing version-1
 
 #### Automated
 
-- [x] 1.1 Add the authenticated catalogue session and transactional review schema
-- [x] 1.2 Add safe recursive discovery and review-session commands
-- [x] 1.3 Add the library-home start, resume, and change-folder review entry states
-- [x] 1.4 Verify workspace tests, compilation, source preservation, and overlap rejection
+- [x] 1.1 Add the authenticated catalogue session and transactional review schema — 746bf47
+- [x] 1.2 Add safe recursive discovery and review-session commands — 746bf47
+- [x] 1.3 Add the library-home start, resume, and change-folder review entry states — 746bf47
+- [x] 1.4 Verify workspace tests, compilation, source preservation, and overlap rejection — 746bf47
 
 #### Manual
 
-- [x] 1.5 Confirm desktop session start, restart resume, folder change, and safe invalid-source states
+- [x] 1.5 Confirm desktop session start, restart resume, folder change, and safe invalid-source states — 746bf47
 
 ### Phase 2: Review, tag, import, and skip media
 
 #### Automated
 
-- [ ] 2.1 Add native review-item, preview, tag, skip, and atomic date-folder import commands
-- [ ] 2.2 Add the focused photo/video review UI with editable date and explicit decisions
-- [ ] 2.3 Verify workspace tests, compilation, encrypted decision persistence, and copy/source safety
+- [x] 2.1 Add native review-item, preview, tag, skip, and atomic date-folder import commands
+- [x] 2.2 Add the focused photo/video review UI with editable date and explicit decisions
+- [x] 2.3 Verify workspace tests, compilation, encrypted decision persistence, and copy/source safety
 
 #### Manual
 
-- [ ] 2.4 Confirm desktop image/video preview, tagging, date override, import, skip, collision naming, and source preservation
+- [x] 2.4 Confirm desktop image/video preview, tagging, date override, import, skip, collision naming, and source preservation
 
 ### Phase 3: Finish the review loop and harden verification
 

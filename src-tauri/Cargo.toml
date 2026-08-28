@@ -26,6 +26,8 @@ aes-gcm = "0.10"
 argon2 = "0.5"
 hex = "0.4"
 rand = "0.8"
+chrono = "0.4"
+percent-encoding = "2"
 rusqlite = { version = "0.32", features = ["bundled-sqlcipher"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"

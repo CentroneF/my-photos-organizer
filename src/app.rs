@@ -56,6 +56,41 @@ struct ReviewState {
     message: String,
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewItem {
+    state: String,
+    candidate_id: Option<i64>,
+    relative_path: Option<String>,
+    filename: Option<String>,
+    media_type: Option<String>,
+    effective_import_date: Option<String>,
+    date_origin: Option<String>,
+    tags: Vec<String>,
+    preview_url: Option<String>,
+    message: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DecideRequest {
+    candidate_id: i64,
+    tags: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportRequest {
+    candidate_id: i64,
+    tags: Vec<String>,
+    effective_import_date: String,
+}
+
+#[derive(Serialize)]
+struct ReviewInvokeArgs<T> {
+    request: T,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SetupRequest<'a> {
@@ -170,6 +205,20 @@ pub fn App() -> Element {
         candidate_count: 0,
         message: String::new(),
     });
+    let mut review_item = use_signal(|| ReviewItem {
+        state: "loading".into(),
+        candidate_id: None,
+        relative_path: None,
+        filename: None,
+        media_type: None,
+        effective_import_date: None,
+        date_origin: None,
+        tags: vec![],
+        preview_url: None,
+        message: String::new(),
+    });
+    let mut review_tags = use_signal(String::new);
+    let mut import_date = use_signal(String::new);
     let mut busy = use_signal(|| false);
     let mut recovery_question = use_signal(String::new);
     let mut show_recovery = use_signal(|| false);
@@ -368,13 +417,113 @@ pub fn App() -> Element {
         busy.set(false);
         match result {
             Ok(value) => match serde_wasm_bindgen::from_value::<ReviewState>(value) {
-                Ok(state) => review_state.set(state),
+                Ok(state) => {
+                    review_state.set(state);
+                    match invoke("next_review_item", JsValue::NULL).await {
+                        Ok(value) => match serde_wasm_bindgen::from_value::<ReviewItem>(value) {
+                            Ok(item) => {
+                                review_tags.set(item.tags.join(", "));
+                                import_date
+                                    .set(item.effective_import_date.clone().unwrap_or_default());
+                                review_item.set(item);
+                                step.set("review".into());
+                            }
+                            Err(_) => {
+                                error.set("The review item returned an unexpected response.".into())
+                            }
+                        },
+                        Err(value) => {
+                            error.set(command_error(value, "Could not load the next review item."))
+                        }
+                    }
+                }
                 Err(_) => error.set("The review session returned an unexpected response.".into()),
             },
             Err(value) => error.set(command_error(
                 value,
                 "Could not start the safe review session.",
             )),
+        }
+    };
+
+    let skip_item = move |_| async move {
+        let Some(candidate_id) = review_item().candidate_id else {
+            return;
+        };
+        error.set(String::new());
+        busy.set(true);
+        let tags = review_tags().split(',').map(str::to_owned).collect();
+        let result = serde_wasm_bindgen::to_value(&ReviewInvokeArgs {
+            request: DecideRequest { candidate_id, tags },
+        })
+        .map_err(|_| JsValue::NULL)
+        .and_then(Ok);
+        let result = match result {
+            Ok(args) => invoke("skip_review_item", args).await,
+            Err(value) => Err(value),
+        };
+        busy.set(false);
+        match result {
+            Ok(_) => match invoke("next_review_item", JsValue::NULL).await {
+                Ok(value) => match serde_wasm_bindgen::from_value::<ReviewItem>(value) {
+                    Ok(item) => {
+                        review_tags.set(item.tags.join(", "));
+                        import_date.set(item.effective_import_date.clone().unwrap_or_default());
+                        review_item.set(item);
+                    }
+                    Err(_) => {
+                        error.set("The next review item returned an unexpected response.".into())
+                    }
+                },
+                Err(value) => error.set(command_error(
+                    value,
+                    "The item was skipped, but the next item could not be loaded.",
+                )),
+            },
+            Err(value) => error.set(command_error(value, "Could not skip this item.")),
+        }
+    };
+
+    let import_item = move |_| async move {
+        let Some(candidate_id) = review_item().candidate_id else {
+            return;
+        };
+        error.set(String::new());
+        busy.set(true);
+        let tags = review_tags().split(',').map(str::to_owned).collect();
+        let date = import_date();
+        let result = serde_wasm_bindgen::to_value(&ReviewInvokeArgs {
+            request: ImportRequest {
+                candidate_id,
+                tags,
+                effective_import_date: date,
+            },
+        })
+        .map_err(|_| JsValue::NULL)
+        .and_then(Ok);
+        let result = match result {
+            Ok(args) => invoke("import_review_item", args).await,
+            Err(value) => Err(value),
+        };
+        busy.set(false);
+        match result {
+            Ok(_) => match invoke("next_review_item", JsValue::NULL).await {
+                Ok(value) => match serde_wasm_bindgen::from_value::<ReviewItem>(value) {
+                    Ok(item) => {
+                        review_tags.set(item.tags.join(", "));
+                        import_date.set(item.effective_import_date.clone().unwrap_or_default());
+                        review_item.set(item);
+                    }
+                    Err(_) => {
+                        error.set("The next review item returned an unexpected response.".into())
+                    }
+                },
+                Err(value) => error.set(command_error(
+                    value,
+                    "The item was imported, but the next item could not be loaded.",
+                )),
+            },
+            Err(value) => error.set(command_error(value, "Could not import this item safely.")),
         }
     };
 
@@ -546,6 +695,10 @@ pub fn App() -> Element {
     } else {
         "progress-dot"
     };
+    let review_date_origin = review_item()
+        .date_origin
+        .clone()
+        .unwrap_or_else(|| "unavailable".into());
 
     rsx! {
         link { rel: "stylesheet", href: CSS }
@@ -671,9 +824,33 @@ pub fn App() -> Element {
                                 span { class: "arrow", "→" }
                             }
                         }
+                    } else if step() == "review" {
+                        p { class: "step-label success-label", "SAFE MEDIA REVIEW" }
+                        if review_item().state == "item" || review_item().state == "unavailable" {
+                            h2 { "Decide on this item." }
+                            p { class: "lede", "Every choice is explicit. Import creates a copy; Skip leaves the original exactly where it is." }
+                            div { class: "review-card",
+                                div { class: "review-context", strong { "{review_item().filename.clone().unwrap_or_default()}" } small { "{review_item().relative_path.clone().unwrap_or_default()}" } }
+                                if review_item().state == "item" {
+                                    if review_item().media_type.as_deref() == Some("video") {
+                                        video { class: "media-preview", controls: true, src: "{review_item().preview_url.clone().unwrap_or_default()}" }
+                                    } else {
+                                        img { class: "media-preview", src: "{review_item().preview_url.clone().unwrap_or_default()}", alt: "Preview of {review_item().filename.clone().unwrap_or_default()}" }
+                                    }
+                                } else { p { class: "error-message", role: "alert", "{review_item().message}" } }
+                                label { class: "review-field", "Tags (comma-separated)" input { value: "{review_tags}", oninput: move |event| review_tags.set(event.value()), placeholder: "Family, summer" } }
+                                label { class: "review-field", "Import date" input { r#type: "date", value: "{import_date}", oninput: move |event| import_date.set(event.value()) } }
+                                p { class: "privacy-note", "Date source: {review_date_origin}. {review_item().message}" }
+                                div { class: "decision-actions", button { class: "secondary-button", r#type: "button", onclick: skip_item, disabled: busy(), "Skip" } button { class: "primary-button", r#type: "button", onclick: import_item, disabled: busy() || review_item().state != "item", if busy() { "Saving decision…" } else { "Import copy" } } }
+                            }
+                        } else {
+                            h2 { "Review queue is clear." }
+                            p { class: "lede", "{review_item().message}" }
+                            button { class: "primary-button", r#type: "button", onclick: move |_| step.set("home".into()), "Back to library home" }
+                        }
                     }
 
-                    if !error().is_empty() && (step() == "folder" || step() == "stale" || step() == "home") { p { class: "error-message", role: "alert", "{error}" } }
+                    if !error().is_empty() { p { class: "error-message", role: "alert", "{error}" } }
                 }
             }
         }
