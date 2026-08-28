@@ -16,6 +16,7 @@ extern "C" {
 struct PickerRequest {
     directory: bool,
     multiple: bool,
+    recursive: bool,
     title: &'static str,
 }
 
@@ -44,6 +45,52 @@ struct ImportSourceRequest<'a> {
 #[derive(Serialize)]
 struct ImportSourceInvokeArgs<'a> {
     request: ImportSourceRequest<'a>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewState {
+    state: String,
+    source_path: Option<String>,
+    candidate_count: u64,
+    message: String,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewItem {
+    state: String,
+    candidate_id: Option<i64>,
+    relative_path: Option<String>,
+    filename: Option<String>,
+    media_type: Option<String>,
+    effective_import_date: Option<String>,
+    date_origin: Option<String>,
+    tags: Vec<String>,
+    preview_url: Option<String>,
+    imported_count: u64,
+    skipped_count: u64,
+    message: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DecideRequest {
+    candidate_id: i64,
+    tags: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportRequest {
+    candidate_id: i64,
+    tags: Vec<String>,
+    effective_import_date: String,
+}
+
+#[derive(Serialize)]
+struct ReviewInvokeArgs<T> {
+    request: T,
 }
 
 #[derive(Serialize)]
@@ -154,6 +201,28 @@ pub fn App() -> Element {
         state: "missing".into(),
         folder_path: None,
     });
+    let mut review_state = use_signal(|| ReviewState {
+        state: "none".into(),
+        source_path: None,
+        candidate_count: 0,
+        message: String::new(),
+    });
+    let mut review_item = use_signal(|| ReviewItem {
+        state: "loading".into(),
+        candidate_id: None,
+        relative_path: None,
+        filename: None,
+        media_type: None,
+        effective_import_date: None,
+        date_origin: None,
+        tags: vec![],
+        preview_url: None,
+        imported_count: 0,
+        skipped_count: 0,
+        message: String::new(),
+    });
+    let mut review_tags = use_signal(String::new);
+    let mut import_date = use_signal(String::new);
     let mut busy = use_signal(|| false);
     let mut recovery_question = use_signal(String::new);
     let mut show_recovery = use_signal(|| false);
@@ -187,6 +256,13 @@ pub fn App() -> Element {
                 }
             }
         });
+        spawn(async move {
+            if let Ok(value) = invoke("current_review_state", JsValue::NULL).await {
+                if let Ok(state) = serde_wasm_bindgen::from_value::<ReviewState>(value) {
+                    review_state.set(state);
+                }
+            }
+        });
     });
 
     use_effect(move || {
@@ -213,6 +289,7 @@ pub fn App() -> Element {
             options: PickerRequest {
                 directory: true,
                 multiple: false,
+                recursive: false,
                 title: "Choose a Photo Handler library folder",
             },
         };
@@ -277,6 +354,7 @@ pub fn App() -> Element {
             options: PickerRequest {
                 directory: true,
                 multiple: false,
+                recursive: true,
                 title: "Choose a folder to import from",
             },
         };
@@ -321,6 +399,151 @@ pub fn App() -> Element {
             Err(value) => error.set(command_error(
                 value,
                 "That folder cannot be used as the import source.",
+            )),
+        }
+    };
+
+    let start_review = move |_| async move {
+        error.set(String::new());
+        busy.set(true);
+        let selected = import_source().folder_path.unwrap_or_default();
+        let result = serde_wasm_bindgen::to_value(&ImportSourceInvokeArgs {
+            request: ImportSourceRequest {
+                folder_path: &selected,
+            },
+        })
+        .map_err(|_| JsValue::NULL)
+        .and_then(|args| Ok(args));
+        let result = match result {
+            Ok(args) => invoke("start_review", args).await,
+            Err(value) => Err(value),
+        };
+        busy.set(false);
+        match result {
+            Ok(value) => match serde_wasm_bindgen::from_value::<ReviewState>(value) {
+                Ok(state) => {
+                    review_state.set(state);
+                    match invoke("next_review_item", JsValue::NULL).await {
+                        Ok(value) => match serde_wasm_bindgen::from_value::<ReviewItem>(value) {
+                            Ok(item) => {
+                                review_tags.set(item.tags.join(", "));
+                                import_date
+                                    .set(item.effective_import_date.clone().unwrap_or_default());
+                                review_item.set(item);
+                                step.set("review".into());
+                            }
+                            Err(_) => {
+                                error.set("The review item returned an unexpected response.".into())
+                            }
+                        },
+                        Err(value) => {
+                            error.set(command_error(value, "Could not load the next review item."))
+                        }
+                    }
+                }
+                Err(_) => error.set("The review session returned an unexpected response.".into()),
+            },
+            Err(value) => error.set(command_error(
+                value,
+                "Could not start the safe review session.",
+            )),
+        }
+    };
+
+    let skip_item = move |_| async move {
+        let Some(candidate_id) = review_item().candidate_id else {
+            return;
+        };
+        error.set(String::new());
+        busy.set(true);
+        let tags = review_tags().split(',').map(str::to_owned).collect();
+        let result = serde_wasm_bindgen::to_value(&ReviewInvokeArgs {
+            request: DecideRequest { candidate_id, tags },
+        })
+        .map_err(|_| JsValue::NULL)
+        .and_then(Ok);
+        let result = match result {
+            Ok(args) => invoke("skip_review_item", args).await,
+            Err(value) => Err(value),
+        };
+        busy.set(false);
+        match result {
+            Ok(_) => match invoke("next_review_item", JsValue::NULL).await {
+                Ok(value) => match serde_wasm_bindgen::from_value::<ReviewItem>(value) {
+                    Ok(item) => {
+                        review_tags.set(item.tags.join(", "));
+                        import_date.set(item.effective_import_date.clone().unwrap_or_default());
+                        review_item.set(item);
+                    }
+                    Err(_) => {
+                        error.set("The next review item returned an unexpected response.".into())
+                    }
+                },
+                Err(value) => error.set(command_error(
+                    value,
+                    "The item was skipped, but the next item could not be loaded.",
+                )),
+            },
+            Err(value) => error.set(command_error(value, "Could not skip this item.")),
+        }
+    };
+
+    let import_item = move |_| async move {
+        let Some(candidate_id) = review_item().candidate_id else {
+            return;
+        };
+        error.set(String::new());
+        busy.set(true);
+        let tags = review_tags().split(',').map(str::to_owned).collect();
+        let date = import_date();
+        let result = serde_wasm_bindgen::to_value(&ReviewInvokeArgs {
+            request: ImportRequest {
+                candidate_id,
+                tags,
+                effective_import_date: date,
+            },
+        })
+        .map_err(|_| JsValue::NULL)
+        .and_then(Ok);
+        let result = match result {
+            Ok(args) => invoke("import_review_item", args).await,
+            Err(value) => Err(value),
+        };
+        busy.set(false);
+        match result {
+            Ok(_) => match invoke("next_review_item", JsValue::NULL).await {
+                Ok(value) => match serde_wasm_bindgen::from_value::<ReviewItem>(value) {
+                    Ok(item) => {
+                        review_tags.set(item.tags.join(", "));
+                        import_date.set(item.effective_import_date.clone().unwrap_or_default());
+                        review_item.set(item);
+                    }
+                    Err(_) => {
+                        error.set("The next review item returned an unexpected response.".into())
+                    }
+                },
+                Err(value) => error.set(command_error(
+                    value,
+                    "The item was imported, but the next item could not be loaded.",
+                )),
+            },
+            Err(value) => error.set(command_error(value, "Could not import this item safely.")),
+        }
+    };
+
+    let lock_and_reopen = move |_| async move {
+        error.set(String::new());
+        busy.set(true);
+        let result = invoke("lock_library", JsValue::NULL).await;
+        busy.set(false);
+        match result {
+            Ok(_) => {
+                password.set(String::new());
+                step.set("unlock".into());
+            }
+            Err(value) => error.set(command_error(
+                value,
+                "Could not lock the protected library.",
             )),
         }
     };
@@ -493,6 +716,10 @@ pub fn App() -> Element {
     } else {
         "progress-dot"
     };
+    let review_date_origin = review_item()
+        .date_origin
+        .clone()
+        .unwrap_or_else(|| "unavailable".into());
 
     rsx! {
         link { rel: "stylesheet", href: CSS }
@@ -588,14 +815,22 @@ pub fn App() -> Element {
                     } else if step() == "home" {
                         p { class: "step-label success-label", "LIBRARY HOME" }
                         h2 { "Choose where to import from." }
-                        p { class: "lede", "Your protected library is ready. Choosing an import folder only remembers its location; Photo Handler will not scan or modify its files yet." }
+                        p { class: "lede", "Your protected library is ready. Starting review reads supported files but never modifies your originals." }
                         div { class: "folder-summary", span { "Protected library" } strong { "{folder}" } }
+                        button { class: "secondary-button", r#type: "button", onclick: lock_and_reopen, disabled: busy(), "Lock library" }
                         if import_source().state == "ready" {
                             div { class: "folder-summary",
                                 span { "Import source" }
                                 strong { "{import_source().folder_path.clone().unwrap_or_default()}" }
                                 button { r#type: "button", onclick: choose_import_source, disabled: busy(), "Change" }
                             }
+                            if review_state().state == "resumable" || review_state().state == "complete" {
+                                button { class: "primary-button", r#type: "button", onclick: start_review, disabled: busy(), "Resume review" }
+                            } else {
+                                button { class: "primary-button", r#type: "button", onclick: start_review, disabled: busy(), if busy() { "Starting safe review…" } else { "Start review" } }
+                            }
+                            if !review_state().message.is_empty() { p { class: "privacy-note", "{review_state().message}" } }
+                            if review_state().candidate_count > 0 { p { class: "privacy-note", "{review_state().candidate_count} supported item(s) are ready in {review_state().source_path.clone().unwrap_or_default()}." } }
                         } else if import_source().state == "stale" {
                             p { class: "step-label", "IMPORT FOLDER UNAVAILABLE" }
                             p { class: "lede", "The remembered import folder may have moved or be offline. Choose another folder when it is available." }
@@ -611,9 +846,46 @@ pub fn App() -> Element {
                                 span { class: "arrow", "→" }
                             }
                         }
+                    } else if step() == "review" {
+                        p { class: "step-label success-label", "SAFE MEDIA REVIEW" }
+                        if review_item().state == "item" || review_item().state == "unavailable" {
+                            h2 { "Decide on this item." }
+                            p { class: "lede", "Every choice is explicit. Import creates a copy; Skip leaves the original exactly where it is." }
+                            div { class: "review-card",
+                                div { class: "review-context", strong { "{review_item().filename.clone().unwrap_or_default()}" } small { "{review_item().relative_path.clone().unwrap_or_default()}" } }
+                                if review_item().state == "item" {
+                                    if review_item().media_type.as_deref() == Some("video") {
+                                        video { class: "media-preview", controls: true, src: "{review_item().preview_url.clone().unwrap_or_default()}", onerror: move |_| error.set("This video cannot be played by the embedded browser. Its details remain available and it was not decided automatically; try another supported desktop codec or Skip explicitly.".into()) }
+                                    } else {
+                                        img { class: "media-preview", src: "{review_item().preview_url.clone().unwrap_or_default()}", alt: "Preview of {review_item().filename.clone().unwrap_or_default()}" }
+                                    }
+                                } else { p { class: "error-message", role: "alert", "{review_item().message}" } }
+                                label { class: "review-field", "Tags (comma-separated)" input { value: "{review_tags}", oninput: move |event| review_tags.set(event.value()), placeholder: "Family, summer" } }
+                                label { class: "review-field", "Import date" input { r#type: "date", value: "{import_date}", oninput: move |event| import_date.set(event.value()) } }
+                                p { class: "privacy-note", "Date source: {review_date_origin}. {review_item().message}" }
+                                div { class: "decision-actions", button { class: "secondary-button", r#type: "button", onclick: skip_item, disabled: busy(), "Skip" } button { class: "primary-button", r#type: "button", onclick: import_item, disabled: busy() || review_item().state != "item", if busy() { "Saving decision…" } else { "Import copy" } } }
+                            }
+                        } else if review_item().state == "complete" {
+                            h2 { "Review complete." }
+                            p { class: "lede", "{review_item().message}" }
+                            div { class: "completion-counts", role: "status",
+                                p { strong { "{review_item().imported_count}" } " imported" }
+                                p { strong { "{review_item().skipped_count}" } " skipped" }
+                            }
+                            p { class: "privacy-note", "Every original remains at its source. Nothing was deleted or moved." }
+                            div { class: "decision-actions",
+                                button { class: "secondary-button", r#type: "button", onclick: move |_| step.set("home".into()), "Back to library home" }
+                                button { class: "primary-button", r#type: "button", onclick: move |_| step.set("home".into()), "Review another folder" }
+                            }
+                            button { class: "secondary-button", r#type: "button", onclick: lock_and_reopen, disabled: busy(), "Lock and reopen later" }
+                        } else {
+                            h2 { "Review queue is clear." }
+                            p { class: "lede", "{review_item().message}" }
+                            button { class: "primary-button", r#type: "button", onclick: move |_| step.set("home".into()), "Back to library home" }
+                        }
                     }
 
-                    if !error().is_empty() && (step() == "folder" || step() == "stale" || step() == "home") { p { class: "error-message", role: "alert", "{error}" } }
+                    if !error().is_empty() { p { class: "error-message", role: "alert", "{error}" } }
                 }
             }
         }

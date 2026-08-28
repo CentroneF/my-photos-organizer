@@ -78,10 +78,13 @@ pub fn save_import_source(
                 "The protected library is unavailable, so an import source cannot be selected yet.",
             )
         })?;
-    if canonical_source == canonical_library {
+    if canonical_source == canonical_library
+        || canonical_source.starts_with(&canonical_library)
+        || canonical_library.starts_with(&canonical_source)
+    {
         return Err(ImportSourceError::new(
             "source_is_library",
-            "The import folder must be separate from your protected library. Nothing was changed.",
+            "The import folder must not be the protected library, contain it, or sit inside it. Nothing was changed.",
         ));
     }
 
@@ -278,6 +281,32 @@ mod tests {
                 .as_deref(),
             Some(retained.path().display().to_string().as_str())
         );
+    }
+
+    #[test]
+    fn rejects_source_and_library_containment_without_changing_source_contents() {
+        let settings = tempdir().unwrap();
+        let parent = tempdir().unwrap();
+        let library = parent.path().join("library");
+        let source = parent.path().join("source");
+        fs::create_dir(&library).unwrap();
+        fs::create_dir(&source).unwrap();
+        let media = source.join("original.jpg");
+        fs::write(&media, b"original").unwrap();
+
+        assert_eq!(
+            save(settings.path(), &library, parent.path())
+                .unwrap_err()
+                .code,
+            "source_is_library"
+        );
+        assert_eq!(
+            save(settings.path(), parent.path(), &library)
+                .unwrap_err()
+                .code,
+            "source_is_library"
+        );
+        assert_eq!(fs::read(&media).unwrap(), b"original");
     }
 
     #[cfg(unix)]
