@@ -237,9 +237,9 @@ No catalogue or preference migration is required. The danger-page route is trans
 
 #### Automated
 
-- [x] 3.1 Implement viewport-bounded review-card and media-preview layout
-- [x] 3.2 Verify compilation and the review layout contract
+- [x] 3.1 Implement viewport-bounded review-card and media-preview layout — e24f88a
+- [x] 3.2 Verify compilation and the review layout contract — e24f88a
 
 #### Manual
 
-- [x] 3.3 Confirm no-scroll review cards for tall/wide images and video at minimum window size
+- [x] 3.3 Confirm no-scroll review cards for tall/wide images and video at minimum window size — e24f88a
