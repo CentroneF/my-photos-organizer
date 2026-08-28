@@ -208,6 +208,23 @@ pub fn lock_library() {
         .expect("library session mutex poisoned") = None;
 }
 
+pub fn active_library_path() -> Result<PathBuf, SetupLibraryError> {
+    let guard = active_session().lock().map_err(|_| {
+        SetupLibraryError::new(
+            "library_locked",
+            "The protected library is locked. Unlock it before opening its folder.",
+        )
+    })?;
+    let session = guard.as_ref().ok_or_else(|| {
+        SetupLibraryError::new(
+            "library_locked",
+            "The protected library is locked. Unlock it before opening its folder.",
+        )
+    })?;
+    validate_existing_library(&session.library_path)?;
+    Ok(session.library_path.clone())
+}
+
 pub fn clean_library(
     request: CleanLibraryRequest,
     app_data_dir: &Path,
@@ -1118,6 +1135,24 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.folder_path, directory.path().display().to_string());
+    }
+
+    #[test]
+    fn active_library_path_requires_an_unlocked_available_library() {
+        let _session_guard = test_session_guard();
+        lock_library();
+        assert_eq!(active_library_path().unwrap_err().code, "library_locked");
+
+        let directory = tempdir().unwrap();
+        setup_library(request(directory.path())).unwrap();
+        assert_eq!(active_library_path().unwrap(), directory.path());
+
+        fs::remove_dir_all(directory.path()).unwrap();
+        assert_eq!(
+            active_library_path().unwrap_err().code,
+            "folder_unavailable"
+        );
+        lock_library();
     }
 
     #[test]

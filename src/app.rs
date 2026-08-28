@@ -240,7 +240,6 @@ pub fn App() -> Element {
     let mut new_password = use_signal(String::new);
     let mut new_confirmation = use_signal(String::new);
     let mut clean_password = use_signal(String::new);
-    let mut show_clean_confirmation = use_signal(|| false);
 
     use_effect(move || {
         spawn(async move {
@@ -544,27 +543,23 @@ pub fn App() -> Element {
         }
     };
 
-    let lock_and_reopen = move |_| async move {
+    let open_library_folder = move |_| async move {
         error.set(String::new());
         busy.set(true);
-        let result = invoke("lock_library", JsValue::NULL).await;
+        let result = invoke("open_library_folder", JsValue::NULL).await;
         busy.set(false);
-        match result {
-            Ok(_) => {
-                password.set(String::new());
-                step.set("unlock".into());
-            }
-            Err(value) => error.set(command_error(
+        if let Err(value) = result {
+            error.set(command_error(
                 value,
-                "Could not lock the protected library.",
-            )),
+                "Could not open the protected library folder.",
+            ));
         }
     };
 
-    let cancel_clean = move |_| {
+    let return_to_home = move |_| {
         clean_password.set(String::new());
-        show_clean_confirmation.set(false);
         error.set(String::new());
+        step.set("home".into());
     };
 
     let clean_library = move |event: FormEvent| async move {
@@ -611,7 +606,7 @@ pub fn App() -> Element {
                     skipped_count: 0,
                     message: String::new(),
                 });
-                show_clean_confirmation.set(false);
+                step.set("home".into());
             }
             Err(value) => error.set(command_error(
                 value,
@@ -876,8 +871,14 @@ pub fn App() -> Element {
                         p { class: "step-label success-label", "LIBRARY HOME" }
                         h2 { "Choose where to import from." }
                         p { class: "lede", "Your protected library is ready. Starting review reads supported files but never modifies your originals." }
-                        div { class: "folder-summary", span { "Protected library" } strong { "{folder}" } }
-                        button { class: "secondary-button", r#type: "button", onclick: lock_and_reopen, disabled: busy(), "Lock library" }
+                        div { class: "folder-summary protected-library-summary",
+                            span { "Protected library" }
+                            strong { "{folder}" }
+                            div { class: "folder-summary-actions",
+                                button { r#type: "button", onclick: open_library_folder, disabled: busy(), if busy() { "Opening folder…" } else { "Open folder" } }
+                            }
+                        }
+                        button { class: "secondary-button", r#type: "button", onclick: move |_| { error.set(String::new()); step.set("danger".into()); }, disabled: busy(), "Open danger zone" }
                         if import_source().state == "ready" {
                             div { class: "folder-summary",
                                 span { "Import source" }
@@ -906,23 +907,15 @@ pub fn App() -> Element {
                                 span { class: "arrow", "→" }
                             }
                         }
-                        if show_clean_confirmation() {
-                            form { class: "setup-form", onsubmit: clean_library,
-                                p { class: "step-label", "DANGER ZONE" }
-                                h3 { "Clean managed debug media" }
-                                p { class: "lede", "Eligible managed date folders will be moved to your operating system Trash. Only after every move succeeds, this clears review history and the remembered import folder. If a move fails, you can safely retry." }
-                                p { class: "privacy-note", "Original source media, .photo-handler, and unrelated content in this library are preserved." }
-                                label { "Current library password" input { r#type: "password", autocomplete: "current-password", value: "{clean_password}", oninput: move |event| clean_password.set(event.value()) } }
-                                button { class: "primary-button", r#type: "submit", disabled: busy(), if busy() { "Cleaning managed media…" } else { "Move managed copies to Trash" } }
-                                button { class: "secondary-button", r#type: "button", onclick: cancel_clean, disabled: busy(), "Cancel" }
-                            }
-                        } else {
-                            div { class: "folder-summary",
-                                span { "Debug maintenance" }
-                                strong { "Clean managed copies" }
-                                p { class: "privacy-note", "Moves only managed date folders to Trash. Originals and protected setup stay unchanged." }
-                                button { r#type: "button", onclick: move |_| { error.set(String::new()); show_clean_confirmation.set(true); }, disabled: busy(), "Open danger zone" }
-                            }
+                    } else if step() == "danger" {
+                        p { class: "step-label", "DANGER ZONE" }
+                        h2 { "Clean managed debug media" }
+                        p { class: "lede", "Eligible managed date folders will be moved to your operating system Trash. Only after every move succeeds, this clears review history and the remembered import folder. If a move fails, you can safely retry." }
+                        form { class: "setup-form", onsubmit: clean_library,
+                            p { class: "privacy-note", "Original source media, .photo-handler, and unrelated content in this library are preserved." }
+                            label { "Current library password" input { r#type: "password", autocomplete: "current-password", value: "{clean_password}", oninput: move |event| clean_password.set(event.value()) } }
+                            button { class: "primary-button", r#type: "submit", disabled: busy(), if busy() { "Cleaning managed media…" } else { "Move managed copies to Trash" } }
+                            button { class: "secondary-button", r#type: "button", onclick: return_to_home, disabled: busy(), "Back" }
                         }
                     } else if step() == "review" {
                         p { class: "step-label success-label", "SAFE MEDIA REVIEW" }
@@ -955,7 +948,6 @@ pub fn App() -> Element {
                                 button { class: "secondary-button", r#type: "button", onclick: move |_| step.set("home".into()), "Back to library home" }
                                 button { class: "primary-button", r#type: "button", onclick: move |_| step.set("home".into()), "Review another folder" }
                             }
-                            button { class: "secondary-button", r#type: "button", onclick: lock_and_reopen, disabled: busy(), "Lock and reopen later" }
                         } else {
                             h2 { "Review queue is clear." }
                             p { class: "lede", "{review_item().message}" }

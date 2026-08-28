@@ -214,24 +214,24 @@ No catalogue or preference migration is required. The danger-page route is trans
 
 #### Automated
 
-- [x] 1.1 Implement the view-state-driven selected-library workspace and remove multi-step presentation
-- [x] 1.2 Verify workspace compilation and absence of removed stepper artifacts
+- [x] 1.1 Implement the view-state-driven selected-library workspace and remove multi-step presentation — 9d6ec39
+- [x] 1.2 Verify workspace compilation and absence of removed stepper artifacts — 9d6ec39
 
 #### Manual
 
-- [x] 1.3 Confirm selected-library workspace transitions and retained onboarding states
+- [x] 1.3 Confirm selected-library workspace transitions and retained onboarding states — 9d6ec39
 
 ### Phase 2: Simplify library-home actions and isolate cleanup
 
 #### Automated
 
-- [ ] 2.1 Add and test the native active-library folder opener
-- [ ] 2.2 Implement home action hierarchy, no-manual-lock UI, and dedicated danger page
-- [ ] 2.3 Verify workspace tests and command-contract compilation
+- [x] 2.1 Add and test the native active-library folder opener
+- [x] 2.2 Implement home action hierarchy, no-manual-lock UI, and dedicated danger page
+- [x] 2.3 Verify workspace tests and command-contract compilation
 
 #### Manual
 
-- [ ] 2.4 Confirm Finder/Explorer folder opening and standalone danger-zone navigation
+- [x] 2.4 Confirm Finder/Explorer folder opening and standalone danger-zone navigation
 
 ### Phase 3: Keep the complete review card in the viewport
 
