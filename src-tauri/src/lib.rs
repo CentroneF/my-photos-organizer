@@ -39,6 +39,22 @@ fn lock_library() {
 }
 
 #[tauri::command]
+fn clean_library(
+    app: tauri::AppHandle,
+    request: library::CleanLibraryRequest,
+) -> Result<library::CleanLibraryResult, library::SetupLibraryError> {
+    use tauri::Manager;
+
+    let app_data_dir = app.path().app_data_dir().map_err(|error| {
+        library::SetupLibraryError::new(
+            "settings_unavailable",
+            format!("Could not access app settings: {error}"),
+        )
+    })?;
+    library::clean_library(request, &app_data_dir)
+}
+
+#[tauri::command]
 fn save_import_source(
     app: tauri::AppHandle,
     request: import_source::SaveImportSourceRequest,
@@ -201,6 +217,7 @@ pub fn run() {
             skip_review_item,
             import_review_item,
             lock_library,
+            clean_library,
             setup_library,
             remembered_library,
             unlock_library,

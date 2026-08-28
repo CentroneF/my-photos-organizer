@@ -13,6 +13,8 @@ use rand::{rngs::OsRng, RngCore};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
+use crate::import_source;
+
 const STATE_DIR: &str = ".photo-handler";
 const MARKER_FILE: &str = "library.json";
 const DATABASE_FILE: &str = "catalogue.db";
@@ -96,6 +98,19 @@ pub struct UnlockLibraryResult {
     pub message: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanLibraryRequest {
+    pub password: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanLibraryResult {
+    pub moved_folder_count: usize,
+    pub message: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoveryQuestionResult {
@@ -107,6 +122,8 @@ pub struct RecoveryQuestionResult {
 pub struct SetupLibraryError {
     pub code: &'static str,
     pub message: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub failed_targets: Vec<String>,
 }
 
 impl SetupLibraryError {
@@ -114,6 +131,18 @@ impl SetupLibraryError {
         Self {
             code,
             message: message.into(),
+            failed_targets: Vec::new(),
+        }
+    }
+
+    fn cleanup_incomplete(failed_targets: Vec<String>) -> Self {
+        let target_summary = failed_targets.join(", ");
+        Self {
+            code: "cleanup_incomplete",
+            message: format!(
+                "Could not move {target_summary} to the operating system Trash. Review data and the remembered import folder were kept so you can retry."
+            ),
+            failed_targets,
         }
     }
 }
@@ -177,6 +206,80 @@ pub fn lock_library() {
     *active_session()
         .lock()
         .expect("library session mutex poisoned") = None;
+}
+
+pub fn clean_library(
+    request: CleanLibraryRequest,
+    app_data_dir: &Path,
+) -> Result<CleanLibraryResult, SetupLibraryError> {
+    clean_library_with_trash(request, app_data_dir, |target| {
+        trash::delete(target).map_err(|error| error.to_string())
+    })
+}
+
+fn clean_library_with_trash(
+    mut request: CleanLibraryRequest,
+    app_data_dir: &Path,
+    move_to_trash: impl Fn(&Path) -> Result<(), String>,
+) -> Result<CleanLibraryResult, SetupLibraryError> {
+    if request.password.is_empty() {
+        return Err(SetupLibraryError::new(
+            "missing_password",
+            "Enter your current library password to clean managed copies.",
+        ));
+    }
+
+    let result = with_catalogue(|connection, library_path| {
+        let marker = validate_existing_library(library_path)?;
+        let mut verified_key = unwrap_key(&marker.password_wrap, &request.password)?;
+        verified_key.fill(0);
+        request.password.clear();
+
+        let targets = managed_media_folders(library_path)?;
+        let mut failed_targets = Vec::new();
+        for target in &targets {
+            if move_to_trash(target).is_err() {
+                // Only expose the validated date-folder name, never an arbitrary filesystem path.
+                failed_targets.push(
+                    target
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+        if !failed_targets.is_empty() {
+            return Err(SetupLibraryError::cleanup_incomplete(failed_targets));
+        }
+
+        let transaction = connection.unchecked_transaction().map_err(|error| {
+            SetupLibraryError::new(
+                "cleanup_failed",
+                format!("Could not clear review data: {error}"),
+            )
+        })?;
+        transaction
+            .execute_batch(
+                "DELETE FROM candidate_tags; DELETE FROM tags; DELETE FROM item_decisions; DELETE FROM review_candidates; DELETE FROM review_sessions;",
+            )
+            .map_err(|error| SetupLibraryError::new("cleanup_failed", format!("Could not clear review data: {error}")))?;
+        transaction.commit().map_err(|error| {
+            SetupLibraryError::new(
+                "cleanup_failed",
+                format!("Could not clear review data: {error}"),
+            )
+        })?;
+        import_source::clear_remembered_import_source(app_data_dir)
+            .map_err(|error| SetupLibraryError::new(error.code, error.message))?;
+
+        Ok(CleanLibraryResult {
+            moved_folder_count: targets.len(),
+            message: "Managed date folders were moved to the operating system Trash. Review history and the remembered import folder were cleared; protected library setup remains unlocked.".into(),
+        })
+    });
+    request.password.clear();
+    result
 }
 
 pub fn with_catalogue<T, E: From<SetupLibraryError>>(
@@ -661,6 +764,96 @@ fn validate_existing_library(folder: &Path) -> Result<LibraryMarker, SetupLibrar
     Ok(marker)
 }
 
+fn managed_media_folders(library_path: &Path) -> Result<Vec<PathBuf>, SetupLibraryError> {
+    let entries = fs::read_dir(library_path).map_err(|error| {
+        SetupLibraryError::new(
+            "library_unavailable",
+            format!("Could not inspect the protected library: {error}"),
+        )
+    })?;
+    let mut targets = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            SetupLibraryError::new(
+                "library_unavailable",
+                format!("Could not inspect the protected library: {error}"),
+            )
+        })?;
+        if entry.file_name() == STATE_DIR {
+            continue;
+        }
+        let kind = entry.file_type().map_err(|error| {
+            SetupLibraryError::new(
+                "library_unavailable",
+                format!("Could not inspect the protected library: {error}"),
+            )
+        })?;
+        if !kind.is_dir() || kind.is_symlink() || !is_year_name(&entry.file_name()) {
+            continue;
+        }
+        let path = entry.path();
+        let date_folders = managed_date_folders(&path)?;
+        if !date_folders.is_empty() {
+            targets.extend(date_folders);
+        }
+    }
+    targets.sort();
+    Ok(targets)
+}
+
+fn is_year_name(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    name.len() == 4 && name.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn managed_date_folders(path: &Path) -> Result<Vec<PathBuf>, SetupLibraryError> {
+    let entries = fs::read_dir(path).map_err(|error| {
+        SetupLibraryError::new(
+            "library_unavailable",
+            format!("Could not inspect a managed-media folder: {error}"),
+        )
+    })?;
+    let mut date_folders = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            SetupLibraryError::new(
+                "library_unavailable",
+                format!("Could not inspect a managed-media folder: {error}"),
+            )
+        })?;
+        let kind = entry.file_type().map_err(|error| {
+            SetupLibraryError::new(
+                "library_unavailable",
+                format!("Could not inspect a managed-media folder: {error}"),
+            )
+        })?;
+        if kind.is_file() && entry.file_name() == ".DS_Store" {
+            continue;
+        }
+        if !kind.is_dir() || kind.is_symlink() || !is_date_folder_name(&entry.file_name()) {
+            return Ok(Vec::new());
+        }
+        date_folders.push(entry.path());
+    }
+    Ok(date_folders)
+}
+
+fn is_date_folder_name(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    name.len() == 10
+        && name.as_bytes()[4] == b'-'
+        && name.as_bytes()[7] == b'-'
+        && name
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+        && chrono::NaiveDate::parse_from_str(name, "%Y-%m-%d").is_ok()
+}
+
 fn validate_catalogue(
     path: &Path,
     database_key: &[u8; KEY_BYTES],
@@ -765,6 +958,7 @@ fn write_marker(state_dir: &Path, marker: &LibraryMarker) -> Result<(), SetupLib
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use tempfile::tempdir;
 
     fn request(path: &Path) -> SetupLibraryRequest {
@@ -1109,5 +1303,240 @@ mod tests {
             .code,
             "library_version_unsupported"
         );
+    }
+
+    #[test]
+    fn managed_media_classification_ignores_finder_metadata_but_rejects_other_content() {
+        let library = tempdir().unwrap();
+        let managed_year = library.path().join("2026");
+        fs::create_dir(&managed_year).unwrap();
+        fs::create_dir(managed_year.join("2026-08-28")).unwrap();
+        fs::write(managed_year.join("2026-08-28").join("copy.jpg"), b"copy").unwrap();
+        fs::write(managed_year.join(".DS_Store"), b"finder metadata").unwrap();
+
+        let mixed_year = library.path().join("2025");
+        fs::create_dir(&mixed_year).unwrap();
+        fs::create_dir(mixed_year.join("2025-01-01")).unwrap();
+        fs::write(mixed_year.join("notes.txt"), b"preserve").unwrap();
+        let malformed_year = library.path().join("2024");
+        fs::create_dir(&malformed_year).unwrap();
+        fs::create_dir(malformed_year.join("2024-13-40")).unwrap();
+        fs::create_dir(library.path().join("not-a-year")).unwrap();
+
+        assert_eq!(
+            managed_media_folders(library.path()).unwrap(),
+            vec![managed_year.join("2026-08-28")]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_media_classification_rejects_symlinked_date_paths() {
+        use std::os::unix::fs::symlink;
+
+        let library = tempdir().unwrap();
+        let year = library.path().join("2026");
+        let outside = tempdir().unwrap();
+        fs::create_dir(&year).unwrap();
+        symlink(outside.path(), year.join("2026-08-28")).unwrap();
+
+        assert!(managed_media_folders(library.path()).unwrap().is_empty());
+        assert!(outside.path().exists());
+    }
+
+    #[test]
+    fn clean_library_rejects_locked_and_wrong_password_without_changing_media() {
+        let _session_guard = test_session_guard();
+        let library = tempdir().unwrap();
+        let settings = tempdir().unwrap();
+        setup_library(request(library.path())).unwrap();
+        let managed_year = library.path().join("2026");
+        fs::create_dir(&managed_year).unwrap();
+        fs::create_dir(managed_year.join("2026-08-28")).unwrap();
+
+        lock_library();
+        assert_eq!(
+            clean_library(
+                CleanLibraryRequest {
+                    password: "correct horse battery staple".into(),
+                },
+                settings.path(),
+            )
+            .unwrap_err()
+            .code,
+            "library_locked"
+        );
+        assert!(managed_year.exists());
+
+        unlock_library(
+            &library.path().display().to_string(),
+            unlock_request("correct horse battery staple"),
+        )
+        .unwrap();
+        assert_eq!(
+            clean_library(
+                CleanLibraryRequest {
+                    password: "wrong password".into(),
+                },
+                settings.path(),
+            )
+            .unwrap_err()
+            .code,
+            "incorrect_credentials"
+        );
+        assert!(managed_year.exists());
+    }
+
+    fn seed_review_data_and_source(library: &Path, settings: &Path, source: &Path) {
+        import_source::save_import_source(
+            settings,
+            &library.display().to_string(),
+            import_source::SaveImportSourceRequest {
+                folder_path: source.display().to_string(),
+            },
+        )
+        .unwrap();
+        with_catalogue(|connection, _| {
+            connection.execute_batch(
+                "INSERT INTO review_sessions (id, source_path, state) VALUES (1, '/source', 'complete');\
+                 INSERT INTO review_candidates (id, session_id, relative_path, file_size, modified_at, media_type) VALUES (1, 1, 'copy.jpg', 1, 1, 'image');\
+                 INSERT INTO tags (id, normalized_name) VALUES (1, 'debug');\
+                 INSERT INTO candidate_tags (candidate_id, tag_id) VALUES (1, 1);\
+                 INSERT INTO item_decisions (candidate_id, decision, destination_path) VALUES (1, 'imported', '/missing/old-copy.jpg');",
+            )
+            .map_err(|error| SetupLibraryError::new("test_failed", error.to_string()))?;
+            Ok::<_, SetupLibraryError>(())
+        })
+        .unwrap();
+    }
+
+    fn review_row_count() -> i64 {
+        with_catalogue(|connection, _| {
+            connection.query_row(
+                "SELECT (SELECT count(*) FROM review_sessions) + (SELECT count(*) FROM review_candidates) + (SELECT count(*) FROM tags) + (SELECT count(*) FROM candidate_tags) + (SELECT count(*) FROM item_decisions)",
+                [],
+                |row| row.get(0),
+            ).map_err(|error| SetupLibraryError::new("test_failed", error.to_string()))
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn partial_cleanup_keeps_metadata_and_source_until_a_successful_retry() {
+        let _session_guard = test_session_guard();
+        let library = tempdir().unwrap();
+        let settings = tempdir().unwrap();
+        let source = tempdir().unwrap();
+        let original = source.path().join("original.jpg");
+        fs::write(&original, b"original").unwrap();
+        setup_library(request(library.path())).unwrap();
+        let first = library.path().join("2026").join("2026-08-28");
+        let second = library.path().join("2026").join("2026-08-30");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::write(first.join("copy.jpg"), b"copy").unwrap();
+        fs::write(second.join("copy.jpg"), b"copy").unwrap();
+        let unrelated = library.path().join("notes.txt");
+        fs::write(&unrelated, b"preserve").unwrap();
+
+        unlock_library(
+            &library.path().display().to_string(),
+            unlock_request("correct horse battery staple"),
+        )
+        .unwrap();
+        seed_review_data_and_source(library.path(), settings.path(), source.path());
+
+        let moves = Cell::new(0);
+        let error = clean_library_with_trash(
+            CleanLibraryRequest {
+                password: "correct horse battery staple".into(),
+            },
+            settings.path(),
+            |target| {
+                moves.set(moves.get() + 1);
+                if target == second {
+                    Err("simulated Trash failure".into())
+                } else {
+                    fs::remove_dir_all(target).map_err(|error| error.to_string())
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "cleanup_incomplete");
+        assert_eq!(error.failed_targets, vec!["2026-08-30"]);
+        assert_eq!(moves.get(), 2);
+        assert!(!first.exists());
+        assert!(second.exists());
+        assert_eq!(review_row_count(), 5);
+        assert_eq!(
+            import_source::remembered_import_source(settings.path())
+                .unwrap()
+                .state,
+            "ready"
+        );
+        assert_eq!(fs::read(&original).unwrap(), b"original");
+        assert_eq!(fs::read(&unrelated).unwrap(), b"preserve");
+
+        let result = clean_library_with_trash(
+            CleanLibraryRequest {
+                password: "correct horse battery staple".into(),
+            },
+            settings.path(),
+            |target| fs::remove_dir_all(target).map_err(|error| error.to_string()),
+        )
+        .unwrap();
+        assert_eq!(result.moved_folder_count, 1);
+        assert!(!second.exists());
+        assert_eq!(review_row_count(), 0);
+        assert_eq!(
+            import_source::remembered_import_source(settings.path())
+                .unwrap()
+                .state,
+            "missing"
+        );
+        assert!(library.path().join(STATE_DIR).join(MARKER_FILE).is_file());
+        assert!(library.path().join(STATE_DIR).join(DATABASE_FILE).is_file());
+        lock_library();
+        assert!(unlock_library(
+            &library.path().display().to_string(),
+            unlock_request("correct horse battery staple"),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn empty_cleanup_clears_only_review_state_and_ignores_stale_destinations() {
+        let _session_guard = test_session_guard();
+        let library = tempdir().unwrap();
+        let settings = tempdir().unwrap();
+        let source = tempdir().unwrap();
+        let original = source.path().join("original.jpg");
+        fs::write(&original, b"original").unwrap();
+        setup_library(request(library.path())).unwrap();
+        unlock_library(
+            &library.path().display().to_string(),
+            unlock_request("correct horse battery staple"),
+        )
+        .unwrap();
+        seed_review_data_and_source(library.path(), settings.path(), source.path());
+
+        let result = clean_library_with_trash(
+            CleanLibraryRequest {
+                password: "correct horse battery staple".into(),
+            },
+            settings.path(),
+            |_| panic!("an empty library must not invoke Trash"),
+        )
+        .unwrap();
+        assert_eq!(result.moved_folder_count, 0);
+        assert_eq!(review_row_count(), 0);
+        assert_eq!(
+            import_source::remembered_import_source(settings.path())
+                .unwrap()
+                .state,
+            "missing"
+        );
+        assert_eq!(fs::read(&original).unwrap(), b"original");
     }
 }
