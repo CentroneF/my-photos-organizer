@@ -189,10 +189,10 @@ No schema migration is required: cleanup removes only mutable review data from t
 
 #### Automated
 
-- [x] 2.1 Add retryable incomplete-cleanup behavior that retains metadata and import-source selection until all targets are trashed.
-- [x] 2.2 Add deterministic partial-failure, retry, malformed-path, and source/unrelated-content regression coverage.
-- [x] 2.3 Verify workspace tests and compilation for complete and partial cleanup paths.
+- [x] 2.1 Add retryable incomplete-cleanup behavior that retains metadata and import-source selection until all targets are trashed. — 6053e34
+- [x] 2.2 Add deterministic partial-failure, retry, malformed-path, and source/unrelated-content regression coverage. — 6053e34
+- [x] 2.3 Verify workspace tests and compilation for complete and partial cleanup paths. — 6053e34
 
 #### Manual
 
-- [x] 2.4 Confirm the desktop retry flow after a Trash failure preserves state until a later successful cleanup.
+- [x] 2.4 Confirm the desktop retry flow after a Trash failure preserves state until a later successful cleanup. — 6053e34
