@@ -235,9 +235,9 @@ The catalogue format increases once for the phase-one search indexes and again f
 
 #### Automated
 
-- [ ] 1.1 Add the encrypted imported-media search query, schema/index migration, and safe preview boundary
-- [ ] 1.2 Register the search command and implement the default Library Search view, filters, grid, and empty-state import action
-- [ ] 1.3 Run `cargo test --workspace` for migration, query, containment, and UI-source coverage
+- [x] 1.1 Add the encrypted imported-media search query, schema/index migration, and safe preview boundary
+- [x] 1.2 Register the search command and implement the default Library Search view, filters, grid, and empty-state import action
+- [x] 1.3 Run `cargo test --workspace` for migration, query, containment, and UI-source coverage
 - [ ] 1.4 Run `cargo tauri build`
 
 #### Manual
@@ -248,9 +248,9 @@ The catalogue format increases once for the phase-one search indexes and again f
 
 #### Automated
 
-- [ ] 2.1 Persist original media dates and migrate existing catalogues safely
-- [ ] 2.2 Add original/selected date modes, two-character imported-tag suggestions, and multi-tag AND filtering to the native/UI search flow
-- [ ] 2.3 Run `cargo test --workspace` for date persistence, migration, suggestion, and combined-filter coverage
+- [x] 2.1 Persist original media dates and migrate existing catalogues safely
+- [x] 2.2 Add original/selected date modes, two-character imported-tag suggestions, and multi-tag AND filtering to the native/UI search flow
+- [x] 2.3 Run `cargo test --workspace` for date persistence, migration, suggestion, and combined-filter coverage
 - [ ] 2.4 Run `cargo tauri build`
 
 #### Manual

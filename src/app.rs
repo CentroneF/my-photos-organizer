@@ -194,6 +194,52 @@ struct CleanLibraryInvokeArgs<'a> {
     request: CleanLibraryRequest<'a>,
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchLibraryResult {
+    items: Vec<SearchLibraryItem>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchLibraryItem {
+    filename: String,
+    media_type: String,
+    effective_import_date: Option<String>,
+    original_media_date: Option<String>,
+    tags: Vec<String>,
+    preview_url: Option<String>,
+    preview_state: String,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchLibraryRequest<'a> {
+    date_field: &'a str,
+    start_date: Option<&'a str>,
+    end_date: Option<&'a str>,
+    media_type: Option<&'a str>,
+    tags: &'a [String],
+}
+#[derive(Serialize)]
+struct SearchLibraryInvokeArgs<'a> {
+    request: SearchLibraryRequest<'a>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TagSuggestionResult {
+    tags: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct TagSuggestionRequest<'a> {
+    prefix: &'a str,
+}
+
+#[derive(Serialize)]
+struct TagSuggestionInvokeArgs<'a> {
+    request: TagSuggestionRequest<'a>,
+}
+
 fn command_error(value: JsValue, fallback: &str) -> String {
     serde_wasm_bindgen::from_value::<CommandError>(value)
         .map(|error| error.message)
@@ -240,6 +286,15 @@ pub fn App() -> Element {
     let mut new_password = use_signal(String::new);
     let mut new_confirmation = use_signal(String::new);
     let mut clean_password = use_signal(String::new);
+    let mut search_start_date = use_signal(String::new);
+    let mut search_end_date = use_signal(String::new);
+    let mut search_date_field = use_signal(|| "selected".to_owned());
+    let mut search_media_type = use_signal(String::new);
+    let mut search_tag_input = use_signal(String::new);
+    let mut search_selected_tags = use_signal(Vec::<String>::new);
+    let mut tag_suggestions = use_signal(Vec::<String>::new);
+    let mut search_items = use_signal(Vec::<SearchLibraryItem>::new);
+    let mut search_loading = use_signal(|| false);
 
     use_effect(move || {
         spawn(async move {
@@ -278,7 +333,7 @@ pub fn App() -> Element {
     });
 
     use_effect(move || {
-        if step() != "home" {
+        if step() != "import" {
             return;
         }
         spawn(async move {
@@ -291,6 +346,74 @@ pub fn App() -> Element {
                     value,
                     "Could not read the remembered import folder.",
                 )),
+            }
+        });
+    });
+
+    use_effect(move || {
+        if step() != "home" {
+            return;
+        }
+        let start = search_start_date();
+        let end = search_end_date();
+        let date_field = search_date_field();
+        let media = search_media_type();
+        let tags = search_selected_tags();
+        spawn(async move {
+            search_loading.set(true);
+            let request = SearchLibraryInvokeArgs {
+                request: SearchLibraryRequest {
+                    date_field: &date_field,
+                    start_date: (!start.is_empty()).then_some(start.as_str()),
+                    end_date: (!end.is_empty()).then_some(end.as_str()),
+                    media_type: (!media.is_empty()).then_some(media.as_str()),
+                    tags: &tags,
+                },
+            };
+            match serde_wasm_bindgen::to_value(&request) {
+                Ok(args) => match invoke("search_library", args).await {
+                    Ok(value) => {
+                        match serde_wasm_bindgen::from_value::<SearchLibraryResult>(value) {
+                            Ok(result) => search_items.set(result.items),
+                            Err(_) => error
+                                .set("The library search returned an unexpected response.".into()),
+                        }
+                    }
+                    Err(value) => error.set(command_error(
+                        value,
+                        "Could not search the protected library.",
+                    )),
+                },
+                Err(_) => error.set("Could not prepare the library search.".into()),
+            }
+            search_loading.set(false);
+        });
+    });
+
+    use_effect(move || {
+        let prefix = search_tag_input();
+        if prefix.chars().count() < 2 {
+            tag_suggestions.set(Vec::new());
+            return;
+        }
+        spawn(async move {
+            let request = TagSuggestionInvokeArgs {
+                request: TagSuggestionRequest { prefix: &prefix },
+            };
+            match serde_wasm_bindgen::to_value(&request) {
+                Ok(args) => match invoke("suggest_library_tags", args).await {
+                    Ok(value) => match serde_wasm_bindgen::from_value::<TagSuggestionResult>(value)
+                    {
+                        Ok(result) => tag_suggestions.set(result.tags),
+                        Err(_) => {
+                            error.set("Tag suggestions returned an unexpected response.".into())
+                        }
+                    },
+                    Err(value) => {
+                        error.set(command_error(value, "Could not load tag suggestions."))
+                    }
+                },
+                Err(_) => error.set("Could not prepare tag suggestions.".into()),
             }
         });
     });
@@ -543,17 +666,21 @@ pub fn App() -> Element {
         }
     };
 
-    let open_library_folder = move |_| async move {
+    let close_library = move |_| async move {
         error.set(String::new());
         busy.set(true);
-        let result = invoke("open_library_folder", JsValue::NULL).await;
-        busy.set(false);
-        if let Err(value) = result {
-            error.set(command_error(
+        match invoke("lock_library", JsValue::NULL).await {
+            Ok(_) => {
+                password.set(String::new());
+                search_items.set(Vec::new());
+                step.set("unlock".into());
+            }
+            Err(value) => error.set(command_error(
                 value,
-                "Could not open the protected library folder.",
-            ));
+                "Could not lock the protected library.",
+            )),
         }
+        busy.set(false);
     };
 
     let return_to_home = move |_| {
@@ -783,11 +910,15 @@ pub fn App() -> Element {
         .unwrap_or_else(|| "unavailable".into());
     let flow_panel_class = if step() == "review" {
         "flow-panel review-flow-panel"
+    } else if step() == "home" {
+        "flow-panel search-flow-panel"
     } else {
         "flow-panel"
     };
     let flow_wrap_class = if step() == "review" {
         "flow-wrap review-flow-wrap"
+    } else if step() == "home" {
+        "flow-wrap search-flow-wrap"
     } else {
         "flow-wrap"
     };
@@ -878,30 +1009,41 @@ pub fn App() -> Element {
                         if !folder().is_empty() { div { class: "folder-summary", span { "Remembered location" } strong { "{folder}" } } }
                         button { class: "primary-button", r#type: "button", onclick: choose_another, "Open existing library" }
                     } else if step() == "home" {
-                        p { class: "step-label success-label", "LIBRARY HOME" }
-                        h2 { "Choose where to import from." }
-                        p { class: "lede", "Your protected library is ready. Starting review reads supported files but never modifies your originals." }
-                        div { class: "folder-summary protected-library-summary",
-                            span { "Protected library" }
-                            strong { "{folder}" }
-                            div { class: "folder-summary-actions",
-                                button { r#type: "button", onclick: open_library_folder, disabled: busy(), if busy() { "Opening folder…" } else { "Open folder" } }
+                        div { class: "library-search", "data-testid": "library-search",
+                            div { class: "library-search-header", div { p { class: "step-label success-label", "LIBRARY SEARCH" } h2 { "Your managed media" } p { class: "lede", "Browse imported copies. Originals remain untouched." } }
+                                div { class: "library-search-actions", button { class: "primary-button", r#type: "button", onclick: move |_| { error.set(String::new()); step.set("import".into()); }, "Import media" } button { class: "secondary-button", r#type: "button", onclick: close_library, disabled: busy(), if busy() { "Closing…" } else { "Close" } } button { class: "secondary-button", r#type: "button", onclick: move |_| step.set("danger".into()), "Danger zone" } }
                             }
+                            div { class: "search-filters",
+                                label { "Date to search" select { value: "{search_date_field}", onchange: move |event| search_date_field.set(event.value()), option { value: "selected", "Selected import date" } option { value: "original", "Original media date" } } }
+                                label { "From" input { r#type: "date", value: "{search_start_date}", oninput: move |event| search_start_date.set(event.value()) } }
+                                label { "To" input { r#type: "date", value: "{search_end_date}", oninput: move |event| search_end_date.set(event.value()) } }
+                                label { "Media type" select { value: "{search_media_type}", onchange: move |event| search_media_type.set(event.value()), option { value: "", "All media" } option { value: "image", "Images" } option { value: "video", "Videos" } } }
+                                div { class: "tag-filter", label { "Tags" input { value: "{search_tag_input}", oninput: move |event| search_tag_input.set(event.value()), placeholder: "Type at least two characters", "aria-describedby": "tag-suggestion-help" } } small { id: "tag-suggestion-help", "Suggestions include imported media only." }
+                                    if !tag_suggestions().is_empty() { div { class: "tag-suggestions", role: "listbox", for suggestion in tag_suggestions() { button { class: "tag-suggestion", r#type: "button", role: "option", onclick: move |_| { let suggestion = suggestion.clone(); search_selected_tags.with_mut(|tags| { if !tags.contains(&suggestion) { tags.push(suggestion); tags.sort(); } }); search_tag_input.set(String::new()); tag_suggestions.set(Vec::new()); }, "{suggestion}" } } } }
+                                    if !search_selected_tags().is_empty() { div { class: "selected-tags", "aria-label": "Selected tags", for tag in search_selected_tags() { button { class: "tag-chip", r#type: "button", onclick: move |_| search_selected_tags.with_mut(|tags| tags.retain(|selected| selected != &tag)), "{tag} ×" } } } }
+                                }
+                            }
+                            if search_date_field() == "original" { p { class: "privacy-note", "Original dates are available only for imports made after this feature was added. Earlier imports remain searchable by selected import date." } }
+                            if search_loading() { p { class: "privacy-note", "Loading imported media…" } }
+                            if !search_loading() && search_items().is_empty() { div { class: "library-empty", "data-testid": "library-empty-state", h3 { "No media has been imported yet." } p { "Use Import media to safely review a folder and create managed copies. Originals are never moved or deleted." } button { class: "primary-button", r#type: "button", onclick: move |_| step.set("import".into()), "Import media" } } }
+                            if !search_loading() && !search_items().is_empty() { div { class: "media-grid", "data-testid": "library-search-grid", for item in search_items() { article { class: "media-card", div { class: "media-card-preview", if item.preview_state == "available" && item.preview_url.is_some() { if item.media_type == "video" { video { muted: true, preload: "metadata", controls: true, src: "{item.preview_url.clone().unwrap_or_default()}" } } else { img { src: "{item.preview_url.clone().unwrap_or_default()}", alt: "Preview of {item.filename}" } } } else { p { class: "preview-fallback", "Preview unavailable" } } } div { class: "media-card-details", strong { "{item.filename}" } small { "{item.media_type}" } small { "Selected: " {item.effective_import_date.clone().unwrap_or_else(|| "unavailable".into())} } small { "Original: " {item.original_media_date.clone().unwrap_or_else(|| "not recorded".into())} } if !item.tags.is_empty() { small { "Tags: " {item.tags.join(", ")} } } } } } } }
                         }
-                        button { class: "secondary-button", r#type: "button", onclick: move |_| { error.set(String::new()); step.set("danger".into()); }, disabled: busy(), "Open danger zone" }
+                    } else if step() == "import" {
+                        h2 { class: "import-title", "Choose where to import from." }
                         if import_source().state == "ready" {
                             div { class: "folder-summary",
                                 span { "Import source" }
                                 strong { "{import_source().folder_path.clone().unwrap_or_default()}" }
                                 button { r#type: "button", onclick: choose_import_source, disabled: busy(), "Change" }
                             }
-                            if review_state().state == "resumable" || review_state().state == "complete" {
-                                button { class: "primary-button", r#type: "button", onclick: start_review, disabled: busy(), "Resume review" }
-                            } else {
-                                button { class: "primary-button", r#type: "button", onclick: start_review, disabled: busy(), if busy() { "Starting safe review…" } else { "Start review" } }
+                            div { class: "decision-actions",
+                                button { class: "secondary-button", r#type: "button", onclick: move |_| step.set("home".into()), disabled: busy(), "Back" }
+                                if review_state().state == "resumable" || review_state().state == "complete" {
+                                    button { class: "primary-button", r#type: "button", onclick: start_review, disabled: busy(), "Resume review" }
+                                } else {
+                                    button { class: "primary-button", r#type: "button", onclick: start_review, disabled: busy(), if busy() { "Starting safe review…" } else { "Start review" } }
+                                }
                             }
-                            if !review_state().message.is_empty() { p { class: "privacy-note", "{review_state().message}" } }
-                            if review_state().candidate_count > 0 { p { class: "privacy-note", "{review_state().candidate_count} supported item(s) are ready in {review_state().source_path.clone().unwrap_or_default()}." } }
                         } else if import_source().state == "stale" {
                             p { class: "step-label", "IMPORT FOLDER UNAVAILABLE" }
                             p { class: "lede", "The remembered import folder may have moved or be offline. Choose another folder when it is available." }
@@ -910,12 +1052,14 @@ pub fn App() -> Element {
                                 strong { "{import_source().folder_path.clone().unwrap_or_default()}" }
                                 button { r#type: "button", onclick: choose_import_source, disabled: busy(), "Change" }
                             }
+                            button { class: "secondary-button", r#type: "button", onclick: move |_| step.set("home".into()), disabled: busy(), "Back" }
                         } else {
                             button { class: "folder-picker", r#type: "button", onclick: choose_import_source, disabled: busy(),
                                 span { class: "folder-icon", "⌑" }
                                 span { strong { if busy() { "Saving import folder…" } else { "Choose import folder" } } small { "Any folder is allowed except your protected library" } }
                                 span { class: "arrow", "→" }
                             }
+                            button { class: "secondary-button", r#type: "button", onclick: move |_| step.set("home".into()), disabled: busy(), "Back" }
                         }
                     } else if step() == "danger" {
                         p { class: "step-label", "DANGER ZONE" }
@@ -994,6 +1138,21 @@ mod review_layout_tests {
             "object-fit: contain;",
         ] {
             assert!(STYLES.contains(selector), "missing review layout rule: {selector}");
+        }
+    }
+
+    #[test]
+    fn library_search_exposes_date_mode_and_tag_suggestion_hooks() {
+        let source = include_str!("app.rs");
+        for hook in [
+            "suggest_library_tags",
+            "Selected import date",
+            "Original media date",
+            "tag-suggestions",
+            "selected-tags",
+            "Original dates are available only for imports made after this feature was added",
+        ] {
+            assert!(source.contains(hook), "missing library-search hook: {hook}");
         }
     }
 }

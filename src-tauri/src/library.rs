@@ -20,7 +20,7 @@ const MARKER_FILE: &str = "library.json";
 const DATABASE_FILE: &str = "catalogue.db";
 const LIBRARY_POINTER_FILE: &str = "selected-library.json";
 const MARKER_FORMAT_VERSION: u32 = 1;
-const CATALOGUE_FORMAT_VERSION: u32 = 3;
+const CATALOGUE_FORMAT_VERSION: u32 = 5;
 const KEY_BYTES: usize = 32;
 const SALT_BYTES: usize = 16;
 const NONCE_BYTES: usize = 12;
@@ -735,7 +735,7 @@ fn initialize_catalogue(
                 format!("Could not encrypt catalogue: {error}"),
             )
         })?;
-    connection.execute_batch("BEGIN IMMEDIATE; CREATE TABLE schema_migrations (version INTEGER NOT NULL); INSERT INTO schema_migrations (version) VALUES (3); CREATE TABLE library_identity (id INTEGER PRIMARY KEY CHECK (id = 1), format_version INTEGER NOT NULL); INSERT INTO library_identity (id, format_version) VALUES (1, 3); CREATE TABLE review_sessions (id INTEGER PRIMARY KEY, source_path TEXT NOT NULL UNIQUE, state TEXT NOT NULL CHECK (state IN ('active', 'complete')), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); CREATE TABLE review_candidates (id INTEGER PRIMARY KEY, session_id INTEGER NOT NULL REFERENCES review_sessions(id), relative_path TEXT NOT NULL, file_size INTEGER NOT NULL, modified_at INTEGER NOT NULL, media_type TEXT NOT NULL, decision TEXT NULL CHECK (decision IN ('imported', 'skipped')), UNIQUE(session_id, relative_path)); CREATE TABLE tags (id INTEGER PRIMARY KEY, normalized_name TEXT NOT NULL UNIQUE); CREATE TABLE candidate_tags (candidate_id INTEGER NOT NULL REFERENCES review_candidates(id), tag_id INTEGER NOT NULL REFERENCES tags(id), PRIMARY KEY(candidate_id, tag_id)); CREATE TABLE item_decisions (candidate_id INTEGER PRIMARY KEY REFERENCES review_candidates(id), decision TEXT NOT NULL CHECK (decision IN ('imported', 'skipped')), decided_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, destination_path TEXT NULL, effective_import_date TEXT NULL, date_origin TEXT NULL); COMMIT;")
+    connection.execute_batch("BEGIN IMMEDIATE; CREATE TABLE schema_migrations (version INTEGER NOT NULL); INSERT INTO schema_migrations (version) VALUES (5); CREATE TABLE library_identity (id INTEGER PRIMARY KEY CHECK (id = 1), format_version INTEGER NOT NULL); INSERT INTO library_identity (id, format_version) VALUES (1, 5); CREATE TABLE review_sessions (id INTEGER PRIMARY KEY, source_path TEXT NOT NULL UNIQUE, state TEXT NOT NULL CHECK (state IN ('active', 'complete')), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); CREATE TABLE review_candidates (id INTEGER PRIMARY KEY, session_id INTEGER NOT NULL REFERENCES review_sessions(id), relative_path TEXT NOT NULL, file_size INTEGER NOT NULL, modified_at INTEGER NOT NULL, media_type TEXT NOT NULL, decision TEXT NULL CHECK (decision IN ('imported', 'skipped')), UNIQUE(session_id, relative_path)); CREATE TABLE tags (id INTEGER PRIMARY KEY, normalized_name TEXT NOT NULL UNIQUE); CREATE TABLE candidate_tags (candidate_id INTEGER NOT NULL REFERENCES review_candidates(id), tag_id INTEGER NOT NULL REFERENCES tags(id), PRIMARY KEY(candidate_id, tag_id)); CREATE TABLE item_decisions (candidate_id INTEGER PRIMARY KEY REFERENCES review_candidates(id), decision TEXT NOT NULL CHECK (decision IN ('imported', 'skipped')), decided_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, destination_path TEXT NULL, effective_import_date TEXT NULL, date_origin TEXT NULL, original_media_date TEXT NULL, original_date_origin TEXT NULL); CREATE INDEX item_decisions_imported_date_idx ON item_decisions(decision, effective_import_date); CREATE INDEX item_decisions_original_date_idx ON item_decisions(decision, original_media_date); CREATE INDEX review_candidates_media_type_idx ON review_candidates(media_type); COMMIT;")
         .map_err(|error| SetupLibraryError::new("initialization_failed", format!("Could not initialize catalogue schema: {error}")))?;
     Ok(())
 }
@@ -916,6 +916,28 @@ fn validate_catalogue(
                     .execute_batch("ALTER TABLE item_decisions ADD COLUMN effective_import_date TEXT NULL; ALTER TABLE item_decisions ADD COLUMN date_origin TEXT NULL;")
                     .map_err(|_| SetupLibraryError::new("library_migration_failed", "Could not migrate the protected library catalogue."))?;
             }
+        }
+        if version < 4 {
+            transaction
+                .execute_batch("CREATE INDEX IF NOT EXISTS item_decisions_imported_date_idx ON item_decisions(decision, effective_import_date); CREATE INDEX IF NOT EXISTS review_candidates_media_type_idx ON review_candidates(media_type);")
+                .map_err(|_| SetupLibraryError::new("library_migration_failed", "Could not migrate the protected library catalogue."))?;
+        }
+        if version < 5 {
+            let original_date_column_exists: i64 = transaction
+                .query_row(
+                    "SELECT count(*) FROM pragma_table_info('item_decisions') WHERE name = 'original_media_date'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|_| SetupLibraryError::new("library_migration_failed", "Could not migrate the protected library catalogue."))?;
+            if original_date_column_exists == 0 {
+                transaction
+                    .execute_batch("ALTER TABLE item_decisions ADD COLUMN original_media_date TEXT NULL; ALTER TABLE item_decisions ADD COLUMN original_date_origin TEXT NULL;")
+                    .map_err(|_| SetupLibraryError::new("library_migration_failed", "Could not migrate the protected library catalogue."))?;
+            }
+            transaction
+                .execute_batch("CREATE INDEX IF NOT EXISTS item_decisions_original_date_idx ON item_decisions(decision, original_media_date);")
+                .map_err(|_| SetupLibraryError::new("library_migration_failed", "Could not migrate the protected library catalogue."))?;
         }
         transaction
             .execute(
