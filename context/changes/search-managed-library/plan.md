@@ -2,7 +2,7 @@
 
 ## Overview
 
-Make Library Search the default experience after a protected library is unlocked. Users will browse their imported media in a safe visual grid and narrow it by a selected-date range, media type, and, in the second slice, suggested normalized tags and the original media date.
+Make Library Search the default experience after a protected library is unlocked. Users will browse their imported media in a safe visual grid and narrow it by a selected-date range, media type, suggested normalized tags, and the original media date; video cards will always have an identifiable pre-interaction state.
 
 ## Current State Analysis
 
@@ -12,7 +12,7 @@ Imported images and videos can reuse the existing dynamic asset protocol, but th
 
 ## Desired End State
 
-After unlocking a library, the user immediately sees their imported media in a responsive grid that uses the full application window, with date range and image/video filters. An empty library explains that no media has been imported and presents an action that enters the existing safe import flow. Later, tag suggestions appear after two characters and the user can search by either the preserved original date or selected import date.
+After unlocking a library, the user immediately sees their imported media in a responsive grid that uses the full application window, with date range and image/video filters. An empty library explains that no media has been imported and presents an action that enters the existing safe import flow. Tag suggestions appear after two characters, users can search by either the preserved original date or selected import date, and video cards use a labelled placeholder until a supported first frame is ready.
 
 ### Key Discoveries:
 
@@ -30,7 +30,7 @@ After unlocking a library, the user immediately sees their imported media in a r
 
 ## Implementation Approach
 
-Deliver the feature in two frontend-verifiable vertical slices. The first adds a query over imported records, scoped previews, and the default-after-unlock grid with selected-date/type filters and an import-oriented empty state. The second persists the original discovered date for future imports, exposes an explicit date-field selector, and supplies prefix tag suggestions after two characters. Both native query paths use the active encrypted session and return only projected result data, never raw source locations.
+Deliver the feature in three frontend-verifiable vertical slices. The first adds a query over imported records, scoped previews, and the default-after-unlock grid with selected-date/type filters and an import-oriented empty state. The second persists the original discovered date for future imports, exposes an explicit date-field selector, and supplies prefix tag suggestions after two characters. The third makes video-card loading and decode failure identifiable while revealing a supported decoded first frame. Both native query paths use the active encrypted session and return only projected result data, never raw source locations.
 
 ## Critical Implementation Details
 
@@ -190,6 +190,52 @@ Preserve both user-relevant date meanings for new imports and make tag filtering
 
 **Implementation Note**: After automated verification passes, pause for human confirmation of the manual checks before declaring the slice complete.
 
+---
+
+## Phase 3: Dependable video-card previews
+
+### Overview
+
+Make every imported video card recognizable before interaction without adding a thumbnail pipeline or changing the managed-media access boundary.
+
+### Changes Required:
+
+#### 1. Card readiness and fallback presentation
+
+**File**: `src/app.rs`
+
+**Intent**: Render a labelled video placeholder while an available video is loading, reveal the video only when its first decodable frame is ready, and retain an explanatory placeholder when decoding fails.
+
+**Contract**: Video cards keep their existing scoped `asset://` URL and metadata. Each card tracks only browser presentation state; `loadeddata` (or the equivalent first-frame-ready event) transitions a supported card to its video element, while an error leaves an identifiable fallback. No autoplay, programmatic seeking, generated poster, or native command is introduced.
+
+**File**: `assets/styles.css`
+
+**Intent**: Make the loading and unavailable video states visually consistent with the existing preview fallback while preserving the 4:3 responsive card layout.
+
+**Contract**: The placeholder communicates that the item is a video and remains readable in narrow layouts; the decoded video fills the same preview bounds without a layout shift.
+
+#### 2. Phase-three automated coverage
+
+**File**: `src/app.rs`
+
+**Intent**: Guard the browser-presentation contract in the project’s existing source-level frontend test style.
+
+**Contract**: Tests assert the ready/error event hooks, labelled loading/error placeholders, and the existing scoped-video markup. They do not claim to prove a WebKit frame was painted; that remains manual verification.
+
+### Success Criteria:
+
+#### Automated Verification:
+
+- `cargo test --workspace` passes, including the video-card readiness and fallback source-level coverage.
+- `cargo tauri build` succeeds with the updated Dioxus view.
+
+#### Manual Verification:
+
+- In a populated unlocked library, a supported managed MP4 or MOV shows a labelled video state immediately and a nonblank first frame before Play is pressed; controls still play and pause normally.
+- An unsupported or unreadable video remains an identifiable card with its metadata and labelled fallback rather than a blank surface; image cards and original-media safeguards remain unchanged.
+
+**Implementation Note**: After automated verification passes, pause here for human confirmation of the manual checks before declaring the change complete.
+
 ## Testing Strategy
 
 ### Unit Tests:
@@ -209,6 +255,7 @@ Preserve both user-relevant date meanings for new imports and make tag filtering
 1. Unlock an empty protected library and confirm its empty state uses the available application space before using Import media to complete a safe import.
 2. Return to Library Search; verify imported images, supported videos, and unavailable-preview fallbacks are identifiable in the grid.
 3. Apply type, selected-date, original-date, and multiple-tag filters; verify skipped/pending/source-only media never appears.
+4. Verify a supported managed video reveals its first frame before interaction, while unsupported or unreadable videos remain labelled and identifiable.
 
 ## Performance Considerations
 
@@ -216,7 +263,7 @@ The initial query targets a single local encrypted catalogue and bounded UI resu
 
 ## Migration Notes
 
-The catalogue format increases once for the phase-one search indexes and again for phase-two original-date columns, using the existing transaction, `schema_migrations`, and `library_identity` protocol. Existing items retain `effective_import_date`; original media date is null and deliberately not reconstructed from managed copies.
+The catalogue format increases once for the phase-one search indexes and again for phase-two original-date columns, using the existing transaction, `schema_migrations`, and `library_identity` protocol. Existing items retain `effective_import_date`; original media date is null and deliberately not reconstructed from managed copies. Video previews remain browser-presented managed files; no derived thumbnail, poster, or catalogue data is created.
 
 ## References
 
@@ -226,6 +273,7 @@ The catalogue format increases once for the phase-one search indexes and again f
 - Import decision persistence and date discovery: `src-tauri/src/review.rs:279-301`, `src-tauri/src/review.rs:378-405`, `src-tauri/src/review.rs:512-522`
 - Existing dynamic preview pattern: `src-tauri/src/review.rs:188-258`
 - Existing unlocked-home and review rendering: `src/app.rs:880-970`
+- Video-preview framing: `context/changes/search-managed-library/frame.md`
 
 ## Progress
 
@@ -256,3 +304,15 @@ The catalogue format increases once for the phase-one search indexes and again f
 #### Manual
 
 - [ ] 2.5 Verify both date modes, tag suggestions, AND filtering, and behavior for legacy imported records
+
+### Phase 3: Dependable video-card previews
+
+#### Automated
+
+- [ ] 3.1 Add video-card first-frame readiness, labelled loading/error fallbacks, and responsive styles
+- [ ] 3.2 Run `cargo test --workspace` for video-card presentation coverage
+- [ ] 3.3 Run `cargo tauri build`
+
+#### Manual
+
+- [ ] 3.4 Verify pre-interaction first-frame display, fallback metadata, normal playback, and unchanged source safety
