@@ -261,7 +261,7 @@ fn tags_for_item(connection: &Connection, candidate_id: i64) -> Result<Vec<Strin
     Ok(tags)
 }
 
-fn safe_preview_url(
+pub(crate) fn safe_preview_url(
     app: &tauri::AppHandle,
     root: &Path,
     destination: &Path,

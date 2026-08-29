@@ -76,6 +76,9 @@ button:disabled { cursor: wait; opacity: .65; }
 .review-field { display: grid; gap: .45rem; color: #3f4559; font-size: .78rem; font-weight: 800; }
 .review-field input { width: 100%; padding: .82rem .9rem; border: 1px solid #d4d0c8; border-radius: .7rem; outline: none; color: #17213b; background: #fffdf8; }
 .review-field input:focus { border-color: #6a64ad; box-shadow: 0 0 0 3px rgba(106, 100, 173, .13); }
+.exact-history { display: grid; gap: .55rem; max-height: 12rem; overflow: auto; padding-right: .2rem; }
+.exact-history-item { display: grid; gap: .35rem; padding: .65rem; border: 1px solid #d8d3c8; border-radius: .7rem; background: #efebe1; }
+.exact-history-item strong { font-size: .78rem; color: #3f4559; }.exact-history-copy { display: flex; gap: .55rem; min-width: 0; }.exact-history-copy div { display: grid; gap: .15rem; min-width: 0; }.exact-history-copy small { overflow-wrap: anywhere; color: #676b78; font-size: .7rem; }.exact-history-preview { width: 3.2rem; height: 3.2rem; flex: 0 0 auto; border-radius: .4rem; object-fit: cover; }
 .decision-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 .review-details .decision-actions { margin-top: auto; }
 .completion-counts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; margin: 1.5rem 0; }

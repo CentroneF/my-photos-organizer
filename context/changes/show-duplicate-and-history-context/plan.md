@@ -224,14 +224,14 @@ Format 6 introduces nullable fingerprint/status fields so existing format-5 deci
 
 #### Automated
 
-- [ ] 1.1 `cargo test --workspace` passes with migration, exact history, revision, and source-preservation coverage.
-- [ ] 1.2 `cargo check --workspace` succeeds with synchronized DTOs and no new capability permission.
-- [ ] 1.3 Exact-match tests prove equality/difference handling, capped order, and no skipped preview URL.
+- [x] 1.1 `cargo test --workspace` passes with migration, exact history, revision, and source-preservation coverage.
+- [x] 1.2 `cargo check --workspace` succeeds with synchronized DTOs and no new capability permission.
+- [x] 1.3 Exact-match tests prove equality/difference handling, capped order, and no skipped preview URL.
 
 #### Manual
 
-- [ ] 1.4 Imported and skipped exact-history contexts are correct, bounded, and leave decisions explicit.
-- [ ] 1.5 A changed same-path file is presented as newly pending without modifying its source.
+- [x] 1.4 Imported and skipped exact-history contexts are correct, bounded, and leave decisions explicit.
+- [x] 1.5 A changed same-path file is presented as newly pending without modifying its source.
 
 ### Phase 2: Similar-picture context for supported still images
 

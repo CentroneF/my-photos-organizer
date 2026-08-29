@@ -100,9 +100,21 @@ struct ReviewItem {
     date_origin: Option<String>,
     tags: Vec<String>,
     preview_url: Option<String>,
+    exact_matches: Vec<ExactMatch>,
     imported_count: u64,
     skipped_count: u64,
     message: String,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExactMatch {
+    decision: String,
+    filename: String,
+    relative_path: String,
+    decided_at: String,
+    tags: Vec<String>,
+    preview_url: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -366,6 +378,7 @@ pub fn App() -> Element {
         date_origin: None,
         tags: vec![],
         preview_url: None,
+        exact_matches: vec![],
         imported_count: 0,
         skipped_count: 0,
         message: String::new(),
@@ -821,6 +834,7 @@ pub fn App() -> Element {
                     date_origin: None,
                     tags: vec![],
                     preview_url: None,
+                    exact_matches: vec![],
                     imported_count: 0,
                     skipped_count: 0,
                     message: String::new(),
@@ -1185,6 +1199,19 @@ pub fn App() -> Element {
                                     label { class: "review-field", "Tags (comma-separated)" input { value: "{review_tags}", oninput: move |event| review_tags.set(event.value()), placeholder: "Family, summer" } }
                                     label { class: "review-field", "Import date" input { r#type: "date", value: "{import_date}", oninput: move |event| import_date.set(event.value()) } }
                                     p { class: "privacy-note", "Date source: {review_date_origin}. {review_item().message}" }
+                                    if !review_item().exact_matches.is_empty() {
+                                        div { class: "exact-history", "aria-label": "Exact file history",
+                                            for matched in review_item().exact_matches {
+                                                article { class: "exact-history-item",
+                                                    strong { if matched.decision == "imported" { "Exact same file previously imported" } else { "Exact same file previously skipped" } }
+                                                    div { class: "exact-history-copy",
+                                                        if let Some(url) = matched.preview_url.clone() { img { class: "exact-history-preview", src: "{url}", alt: "Managed preview of {matched.filename}" } }
+                                                        div { small { "{matched.filename}" } small { "{matched.relative_path}" } small { "Handled: {matched.decided_at}" } if !matched.tags.is_empty() { small { "Tags: {matched.tags.join(\", \")}" } } }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                     div { class: "decision-actions", button { class: "secondary-button", r#type: "button", onclick: skip_item, disabled: busy(), "Skip" } button { class: "primary-button", r#type: "button", onclick: import_item, disabled: busy() || review_item().state != "item", if busy() { "Saving decision…" } else { "Import copy" } } }
                                 }
                             }
@@ -1231,6 +1258,23 @@ mod review_layout_tests {
         ] {
             assert!(STYLES.contains(selector), "missing review layout rule: {selector}");
         }
+    }
+
+    #[test]
+    fn review_shows_bounded_advisory_exact_history_before_decisions() {
+        let source = include_str!("app.rs");
+        for hook in [
+            "Exact same file previously imported",
+            "Exact same file previously skipped",
+            "exact-history",
+            "review_item().exact_matches",
+            "class: \"decision-actions\"",
+        ] {
+            assert!(source.contains(hook), "missing exact-history hook: {hook}");
+        }
+        assert!(STYLES.contains(
+            ".exact-history { display: grid; gap: .55rem; max-height: 12rem; overflow: auto;"
+        ));
     }
 
     #[test]

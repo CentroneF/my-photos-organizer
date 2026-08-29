@@ -14,6 +14,10 @@ use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
 use crate::library::{self, SetupLibraryError};
+use crate::search;
+
+const CONTENT_FINGERPRINT_ALGORITHM: &str = "blake3-256-v1";
+const EXACT_HISTORY_LIMIT: usize = 3;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,9 +39,21 @@ pub struct ReviewItem {
     pub date_origin: Option<String>,
     pub tags: Vec<String>,
     pub preview_url: Option<String>,
+    pub exact_matches: Vec<ExactMatch>,
     pub imported_count: u64,
     pub skipped_count: u64,
     pub message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExactMatch {
+    pub decision: String,
+    pub filename: String,
+    pub relative_path: String,
+    pub decided_at: String,
+    pub tags: Vec<String>,
+    pub preview_url: Option<String>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -112,12 +128,26 @@ pub fn start_review(source_path: &str) -> Result<ReviewState, ReviewError> {
             let transaction = connection.unchecked_transaction().map_err(database_error)?;
             let mut additions = 0;
             for candidate in &candidates {
-                additions += transaction
-                    .execute(
-                        "INSERT INTO review_candidates (session_id, relative_path, file_size, modified_at, media_type) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(session_id, relative_path) DO NOTHING",
-                        params![session_id, candidate.relative_path, candidate.file_size, candidate.modified_at, candidate.media_type],
-                    )
-                    .map_err(database_error)?;
+                let latest = transaction.query_row(
+                    "SELECT file_size, modified_at, media_type, revision FROM review_candidates WHERE session_id = ?1 AND relative_path = ?2 ORDER BY revision DESC LIMIT 1",
+                    params![session_id, candidate.relative_path],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?)),
+                ).optional().map_err(database_error)?;
+                let revision = match latest {
+                    Some((size, modified, media_type, _revision))
+                        if size == candidate.file_size
+                            && modified == candidate.modified_at
+                            && media_type == candidate.media_type =>
+                    {
+                        continue
+                    }
+                    Some((_, _, _, revision)) => revision + 1,
+                    None => 1,
+                };
+                additions += transaction.execute(
+                    "INSERT INTO review_candidates (session_id, relative_path, revision, file_size, modified_at, media_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![session_id, candidate.relative_path, revision, candidate.file_size, candidate.modified_at, candidate.media_type],
+                ).map_err(database_error)?;
             }
             if additions > 0 {
                 transaction
@@ -161,7 +191,7 @@ pub fn start_review(source_path: &str) -> Result<ReviewState, ReviewError> {
             .map_err(database_error)?;
         let session_id = transaction.last_insert_rowid();
         for candidate in &candidates {
-            transaction.execute("INSERT INTO review_candidates (session_id, relative_path, file_size, modified_at, media_type) VALUES (?1, ?2, ?3, ?4, ?5)", params![session_id, candidate.relative_path, candidate.file_size, candidate.modified_at, candidate.media_type]).map_err(database_error)?;
+            transaction.execute("INSERT INTO review_candidates (session_id, relative_path, revision, file_size, modified_at, media_type) VALUES (?1, ?2, 1, ?3, ?4, ?5)", params![session_id, candidate.relative_path, candidate.file_size, candidate.modified_at, candidate.media_type]).map_err(database_error)?;
         }
         if candidates.is_empty() {
             transaction
@@ -186,7 +216,7 @@ pub fn start_review(source_path: &str) -> Result<ReviewState, ReviewError> {
 }
 
 pub fn next_review_item(app: tauri::AppHandle) -> Result<ReviewItem, ReviewError> {
-    library::with_catalogue(|connection, _| {
+    library::with_catalogue(|connection, library_path| {
         let (session_id, session_state) = match connection.query_row(
             "SELECT id, state FROM review_sessions ORDER BY id DESC LIMIT 1",
             [],
@@ -199,12 +229,13 @@ pub fn next_review_item(app: tauri::AppHandle) -> Result<ReviewItem, ReviewError
         if session_state == "complete" {
             return completion_item_for_session(connection, session_id);
         }
-        let row = connection.query_row("SELECT c.id, s.source_path, c.relative_path, c.media_type FROM review_candidates c JOIN review_sessions s ON s.id = c.session_id WHERE c.session_id = ?1 AND c.decision IS NULL ORDER BY c.relative_path LIMIT 1", [session_id], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)));
-        let (candidate_id, source_path, relative_path, media_type) = match row {
-            Ok(row) => row,
-            Err(rusqlite::Error::QueryReturnedNoRows) => return completion_item(connection),
-            Err(error) => return Err(database_error(error)),
-        };
+        let row = connection.query_row("SELECT c.id, s.source_path, c.relative_path, c.media_type, c.file_size, c.modified_at FROM review_candidates c JOIN review_sessions s ON s.id = c.session_id WHERE c.session_id = ?1 AND c.decision IS NULL ORDER BY c.relative_path, c.revision LIMIT 1", [session_id], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?, row.get::<_, i64>(5)?)));
+        let (candidate_id, source_path, relative_path, media_type, file_size, modified_at) =
+            match row {
+                Ok(row) => row,
+                Err(rusqlite::Error::QueryReturnedNoRows) => return completion_item(connection),
+                Err(error) => return Err(database_error(error)),
+            };
         let path = Path::new(&source_path).join(&relative_path);
         let filename = Path::new(&relative_path)
             .file_name()
@@ -213,6 +244,27 @@ pub fn next_review_item(app: tauri::AppHandle) -> Result<ReviewItem, ReviewError
         let tags = candidate_tags(connection, candidate_id)?;
         let (date, origin) =
             effective_date(&path).unwrap_or_else(|| ("1970-01-01".into(), "unavailable".into()));
+        let fingerprint = match fingerprint_file(&path, file_size, modified_at) {
+            Ok(fingerprint) => fingerprint,
+            Err(message) => {
+                return Ok(unavailable_item(
+                    candidate_id,
+                    relative_path,
+                    filename,
+                    media_type,
+                    date,
+                    origin,
+                    tags,
+                    message,
+                ))
+            }
+        };
+        connection.execute(
+            "UPDATE review_candidates SET content_fingerprint_algorithm = ?1, content_fingerprint_value = ?2 WHERE id = ?3",
+            params![CONTENT_FINGERPRINT_ALGORITHM, fingerprint, candidate_id],
+        ).map_err(database_error)?;
+        let exact_matches =
+            exact_matches(connection, &app, library_path, candidate_id, &fingerprint)?;
         let preview_url = match readable_file(&path) {
             Ok(()) => {
                 app.asset_protocol_scope().allow_file(&path).map_err(|_| {
@@ -224,20 +276,16 @@ pub fn next_review_item(app: tauri::AppHandle) -> Result<ReviewItem, ReviewError
                 Some(asset_url(&path)?)
             }
             Err(message) => {
-                return Ok(ReviewItem {
-                    state: "unavailable",
-                    candidate_id: Some(candidate_id),
-                    relative_path: Some(relative_path),
-                    filename: Some(filename),
-                    media_type: Some(media_type),
-                    effective_import_date: Some(date),
-                    date_origin: Some(origin),
+                return Ok(unavailable_item(
+                    candidate_id,
+                    relative_path,
+                    filename,
+                    media_type,
+                    date,
+                    origin,
                     tags,
-                    preview_url: None,
-                    imported_count: 0,
-                    skipped_count: 0,
                     message,
-                })
+                ))
             }
         };
         Ok(ReviewItem {
@@ -250,6 +298,7 @@ pub fn next_review_item(app: tauri::AppHandle) -> Result<ReviewItem, ReviewError
             date_origin: Some(origin),
             tags,
             preview_url,
+            exact_matches,
             imported_count: 0,
             skipped_count: 0,
             message:
@@ -344,6 +393,7 @@ fn completion_item_for_session(
             date_origin: None,
             tags: vec![],
             preview_url: None,
+            exact_matches: vec![],
             imported_count,
             skipped_count,
             message: format!(
@@ -366,10 +416,141 @@ fn empty_item() -> ReviewItem {
         date_origin: None,
         tags: vec![],
         preview_url: None,
+        exact_matches: vec![],
         imported_count: 0,
         skipped_count: 0,
         message: "There are no pending items in this review.".into(),
     }
+}
+
+fn unavailable_item(
+    candidate_id: i64,
+    relative_path: String,
+    filename: String,
+    media_type: String,
+    date: String,
+    origin: String,
+    tags: Vec<String>,
+    message: String,
+) -> ReviewItem {
+    ReviewItem {
+        state: "unavailable",
+        candidate_id: Some(candidate_id),
+        relative_path: Some(relative_path),
+        filename: Some(filename),
+        media_type: Some(media_type),
+        effective_import_date: Some(date),
+        date_origin: Some(origin),
+        tags,
+        preview_url: None,
+        exact_matches: vec![],
+        imported_count: 0,
+        skipped_count: 0,
+        message,
+    }
+}
+
+fn fingerprint_file(
+    path: &Path,
+    expected_size: i64,
+    expected_modified_at: i64,
+) -> Result<Vec<u8>, String> {
+    let before = stable_metadata(path)?;
+    if before != (expected_size, expected_modified_at) {
+        return Err("This source item changed since discovery. Refresh the review before deciding; no fingerprint was saved.".into());
+    }
+    let mut file = fs::File::open(path).map_err(|_| {
+        "This source item cannot be read. It was not skipped or imported.".to_owned()
+    })?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer).map_err(|_| {
+            "This source item cannot be read. It was not skipped or imported.".to_owned()
+        })?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    if stable_metadata(path)? != before {
+        return Err("This source item changed while it was being checked. Refresh the review before deciding; no fingerprint was saved.".into());
+    }
+    Ok(hasher.finalize().as_bytes().to_vec())
+}
+
+fn stable_metadata(path: &Path) -> Result<(i64, i64), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| {
+        "This source item is unavailable. It was not skipped or imported.".to_owned()
+    })?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err("This source item is unavailable. It was not skipped or imported.".into());
+    }
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+    Ok((metadata.len() as i64, modified))
+}
+
+fn exact_matches(
+    connection: &Connection,
+    app: &tauri::AppHandle,
+    library_path: &Path,
+    active_candidate_id: i64,
+    fingerprint: &[u8],
+) -> Result<Vec<ExactMatch>, ReviewError> {
+    let mut statement = connection.prepare(
+        "SELECT c.id, c.relative_path, d.decision, d.decided_at, d.destination_path \
+         FROM review_candidates c JOIN item_decisions d ON d.candidate_id = c.id \
+         WHERE c.content_fingerprint_algorithm = ?1 AND c.content_fingerprint_value = ?2 AND c.id != ?3 \
+         ORDER BY d.decided_at DESC, c.id LIMIT ?4"
+    ).map_err(database_error)?;
+    let rows = statement
+        .query_map(
+            params![
+                CONTENT_FINGERPRINT_ALGORITHM,
+                fingerprint,
+                active_candidate_id,
+                EXACT_HISTORY_LIMIT as i64
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            },
+        )
+        .map_err(database_error)?;
+    rows.map(|row| {
+        let (candidate_id, relative_path, decision, decided_at, destination) =
+            row.map_err(database_error)?;
+        let preview_url = if decision == "imported" {
+            destination.and_then(|destination| {
+                search::safe_preview_url(app, library_path, Path::new(&destination)).0
+            })
+        } else {
+            None
+        };
+        Ok(ExactMatch {
+            decision,
+            filename: Path::new(&relative_path)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            relative_path,
+            decided_at,
+            tags: candidate_tags(connection, candidate_id)?,
+            preview_url,
+        })
+    })
+    .collect()
 }
 fn review_state(connection: &Connection) -> Result<ReviewState, ReviewError> {
     match connection.query_row("SELECT source_path, state, (SELECT count(*) FROM review_candidates WHERE session_id = review_sessions.id AND decision IS NULL) FROM review_sessions ORDER BY id DESC LIMIT 1", [], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, u64>(2)?))) { Ok((source_path, state, candidate_count)) => Ok(ReviewState { state: if state == "complete" { "complete" } else { "resumable" }, source_path: Some(source_path), candidate_count, message: if state == "complete" { "Resume to check this source for newly added supported files. Originals are never modified.".into() } else { "Resume the safe read-only review. Originals are never modified.".into() } }), Err(rusqlite::Error::QueryReturnedNoRows) => Ok(ReviewState { state: "none", source_path: None, candidate_count: 0, message: "No unfinished review is available.".into() }), Err(error) => Err(database_error(error)) }
@@ -783,6 +964,98 @@ mod tests {
             "candidate_unavailable"
         );
         assert!(fs::read_dir(library.path()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn fingerprints_equal_bytes_but_rejects_equal_size_different_bytes() {
+        let _session_guard = library::test_session_guard();
+        let directory = tempdir().unwrap();
+        let first = directory.path().join("first.jpg");
+        let second = directory.path().join("second.jpg");
+        let different = directory.path().join("third.jpg");
+        fs::write(&first, b"same bytes").unwrap();
+        fs::write(&second, b"same bytes").unwrap();
+        fs::write(&different, b"same bytez").unwrap();
+        let first_metadata = stable_metadata(&first).unwrap();
+        let second_metadata = stable_metadata(&second).unwrap();
+        let different_metadata = stable_metadata(&different).unwrap();
+        assert_eq!(
+            fingerprint_file(&first, first_metadata.0, first_metadata.1).unwrap(),
+            fingerprint_file(&second, second_metadata.0, second_metadata.1).unwrap()
+        );
+        assert_ne!(
+            fingerprint_file(&first, first_metadata.0, first_metadata.1).unwrap(),
+            fingerprint_file(&different, different_metadata.0, different_metadata.1).unwrap()
+        );
+        assert_eq!(fs::read(&first).unwrap(), b"same bytes");
+    }
+
+    #[test]
+    fn resume_appends_a_revision_when_a_decided_path_changes() {
+        let _session_guard = library::test_session_guard();
+        let library_dir = tempdir().unwrap();
+        let source_dir = tempdir().unwrap();
+        let source = source_dir.path().join("same.jpg");
+        fs::write(&source, b"first original").unwrap();
+        library::setup_library(library::SetupLibraryRequest {
+            folder_path: library_dir.path().display().to_string(),
+            password: "correct horse battery staple".into(),
+            password_confirmation: "correct horse battery staple".into(),
+            recovery_question: "First pet?".into(),
+            recovery_answer: "Mochi".into(),
+        })
+        .unwrap();
+        start_review(&source_dir.path().display().to_string()).unwrap();
+        let first_id = library::with_catalogue(|connection, _| {
+            connection
+                .query_row("SELECT id FROM review_candidates", [], |row| row.get(0))
+                .map_err(database_error)
+        })
+        .unwrap();
+        skip_review_item(DecideRequest {
+            candidate_id: first_id,
+            tags: vec![],
+        })
+        .unwrap();
+        fs::write(&source, b"second original with different size").unwrap();
+        let resumed = start_review(&source_dir.path().display().to_string()).unwrap();
+        assert_eq!(resumed.candidate_count, 1);
+        let rows: Vec<(i64, Option<String>)> = library::with_catalogue(|connection, _| {
+            let mut statement = connection.prepare("SELECT revision, decision FROM review_candidates WHERE relative_path = 'same.jpg' ORDER BY revision").map_err(database_error)?;
+            let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?))).map_err(database_error)?.collect::<Result<_, _>>().map_err(database_error);
+            rows
+        }).unwrap();
+        assert_eq!(rows, vec![(1, Some("skipped".into())), (2, None)]);
+        assert_eq!(
+            fs::read(&source).unwrap(),
+            b"second original with different size"
+        );
+    }
+
+    #[test]
+    fn exact_history_query_is_capped_and_orders_newest_decisions_first() {
+        let _session_guard = library::test_session_guard();
+        let library_dir = tempdir().unwrap();
+        library::setup_library(library::SetupLibraryRequest {
+            folder_path: library_dir.path().display().to_string(),
+            password: "correct horse battery staple".into(),
+            password_confirmation: "correct horse battery staple".into(),
+            recovery_question: "First pet?".into(),
+            recovery_answer: "Mochi".into(),
+        })
+        .unwrap();
+        let digest = vec![7_u8; 32];
+        let ids = library::with_catalogue(|connection, _| {
+            connection.execute_batch("INSERT INTO review_sessions (id, source_path, state) VALUES (1, 'source', 'complete');").map_err(database_error)?;
+            for id in 1..=4 {
+                connection.execute("INSERT INTO review_candidates (id, session_id, relative_path, revision, file_size, modified_at, media_type, content_fingerprint_algorithm, content_fingerprint_value, decision) VALUES (?1, 1, ?2, 1, 1, 1, 'image', ?3, ?4, 'skipped')", params![id, format!("{id}.jpg"), CONTENT_FINGERPRINT_ALGORITHM, digest]).map_err(database_error)?;
+                connection.execute("INSERT INTO item_decisions (candidate_id, decision, decided_at) VALUES (?1, 'skipped', ?2)", params![id, format!("2026-08-0{id} 00:00:00")]).map_err(database_error)?;
+            }
+            let mut statement = connection.prepare("SELECT c.id FROM review_candidates c JOIN item_decisions d ON d.candidate_id = c.id WHERE c.content_fingerprint_algorithm = ?1 AND c.content_fingerprint_value = ?2 ORDER BY d.decided_at DESC, c.id LIMIT ?3").map_err(database_error)?;
+            let ids = statement.query_map(params![CONTENT_FINGERPRINT_ALGORITHM, digest, EXACT_HISTORY_LIMIT as i64], |row| row.get(0)).map_err(database_error)?.collect::<Result<Vec<i64>, _>>().map_err(database_error)?;
+            Ok::<_, ReviewError>(ids)
+        }).unwrap();
+        assert_eq!(ids, vec![4, 3, 2]);
     }
 
     #[test]
