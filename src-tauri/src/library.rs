@@ -20,7 +20,7 @@ const MARKER_FILE: &str = "library.json";
 const DATABASE_FILE: &str = "catalogue.db";
 const LIBRARY_POINTER_FILE: &str = "selected-library.json";
 const MARKER_FORMAT_VERSION: u32 = 1;
-const CATALOGUE_FORMAT_VERSION: u32 = 6;
+const CATALOGUE_FORMAT_VERSION: u32 = 7;
 const KEY_BYTES: usize = 32;
 const SALT_BYTES: usize = 16;
 const NONCE_BYTES: usize = 12;
@@ -737,6 +737,8 @@ fn initialize_catalogue(
         })?;
     connection.execute_batch("BEGIN IMMEDIATE; CREATE TABLE schema_migrations (version INTEGER NOT NULL); INSERT INTO schema_migrations (version) VALUES (6); CREATE TABLE library_identity (id INTEGER PRIMARY KEY CHECK (id = 1), format_version INTEGER NOT NULL); INSERT INTO library_identity (id, format_version) VALUES (1, 6); CREATE TABLE review_sessions (id INTEGER PRIMARY KEY, source_path TEXT NOT NULL UNIQUE, state TEXT NOT NULL CHECK (state IN ('active', 'complete')), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); CREATE TABLE review_candidates (id INTEGER PRIMARY KEY, session_id INTEGER NOT NULL REFERENCES review_sessions(id), relative_path TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, file_size INTEGER NOT NULL, modified_at INTEGER NOT NULL, media_type TEXT NOT NULL, content_fingerprint_algorithm TEXT NULL, content_fingerprint_value BLOB NULL, decision TEXT NULL CHECK (decision IN ('imported', 'skipped')), UNIQUE(session_id, relative_path, revision)); CREATE TABLE tags (id INTEGER PRIMARY KEY, normalized_name TEXT NOT NULL UNIQUE); CREATE TABLE candidate_tags (candidate_id INTEGER NOT NULL REFERENCES review_candidates(id), tag_id INTEGER NOT NULL REFERENCES tags(id), PRIMARY KEY(candidate_id, tag_id)); CREATE TABLE item_decisions (candidate_id INTEGER PRIMARY KEY REFERENCES review_candidates(id), decision TEXT NOT NULL CHECK (decision IN ('imported', 'skipped')), decided_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, destination_path TEXT NULL, effective_import_date TEXT NULL, date_origin TEXT NULL, original_media_date TEXT NULL, original_date_origin TEXT NULL); CREATE INDEX item_decisions_imported_date_idx ON item_decisions(decision, effective_import_date); CREATE INDEX item_decisions_original_date_idx ON item_decisions(decision, original_media_date); CREATE INDEX review_candidates_media_type_idx ON review_candidates(media_type); CREATE INDEX review_candidates_content_fingerprint_idx ON review_candidates(content_fingerprint_algorithm, content_fingerprint_value); COMMIT;")
         .map_err(|error| SetupLibraryError::new("initialization_failed", format!("Could not initialize catalogue schema: {error}")))?;
+    connection.execute_batch("ALTER TABLE review_candidates ADD COLUMN perceptual_hash_algorithm TEXT NULL; ALTER TABLE review_candidates ADD COLUMN perceptual_hash_value INTEGER NULL; ALTER TABLE review_candidates ADD COLUMN visual_comparison_state TEXT NULL; CREATE INDEX review_candidates_perceptual_hash_idx ON review_candidates(perceptual_hash_algorithm, perceptual_hash_value); UPDATE schema_migrations SET version = 7; UPDATE library_identity SET format_version = 7;")
+        .map_err(|error| SetupLibraryError::new("initialization_failed", format!("Could not initialize catalogue schema: {error}")))?;
     Ok(())
 }
 
@@ -941,6 +943,10 @@ fn validate_catalogue(
         }
         if version < 6 {
             transaction.execute_batch("CREATE TABLE review_candidates_v6 (id INTEGER PRIMARY KEY, session_id INTEGER NOT NULL REFERENCES review_sessions(id), relative_path TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, file_size INTEGER NOT NULL, modified_at INTEGER NOT NULL, media_type TEXT NOT NULL, content_fingerprint_algorithm TEXT NULL, content_fingerprint_value BLOB NULL, decision TEXT NULL CHECK (decision IN ('imported', 'skipped')), UNIQUE(session_id, relative_path, revision)); INSERT INTO review_candidates_v6 (id, session_id, relative_path, revision, file_size, modified_at, media_type, decision) SELECT id, session_id, relative_path, 1, file_size, modified_at, media_type, decision FROM review_candidates; DROP TABLE review_candidates; ALTER TABLE review_candidates_v6 RENAME TO review_candidates; CREATE INDEX review_candidates_media_type_idx ON review_candidates(media_type); CREATE INDEX review_candidates_content_fingerprint_idx ON review_candidates(content_fingerprint_algorithm, content_fingerprint_value);")
+                .map_err(|_| SetupLibraryError::new("library_migration_failed", "Could not migrate the protected library catalogue."))?;
+        }
+        if version < 7 {
+            transaction.execute_batch("ALTER TABLE review_candidates ADD COLUMN perceptual_hash_algorithm TEXT NULL; ALTER TABLE review_candidates ADD COLUMN perceptual_hash_value INTEGER NULL; ALTER TABLE review_candidates ADD COLUMN visual_comparison_state TEXT NULL; CREATE INDEX IF NOT EXISTS review_candidates_perceptual_hash_idx ON review_candidates(perceptual_hash_algorithm, perceptual_hash_value);")
                 .map_err(|_| SetupLibraryError::new("library_migration_failed", "Could not migrate the protected library catalogue."))?;
         }
         transaction

@@ -101,6 +101,8 @@ struct ReviewItem {
     tags: Vec<String>,
     preview_url: Option<String>,
     exact_matches: Vec<ExactMatch>,
+    similar_matches: Vec<SimilarMatch>,
+    visual_comparison_message: Option<String>,
     imported_count: u64,
     skipped_count: u64,
     message: String,
@@ -115,6 +117,15 @@ struct ExactMatch {
     decided_at: String,
     tags: Vec<String>,
     preview_url: Option<String>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SimilarMatch {
+    filename: String,
+    decided_at: String,
+    tags: Vec<String>,
+    preview_url: Option<String>,
+    similarity_label: String,
 }
 
 #[derive(Serialize)]
@@ -379,6 +390,8 @@ pub fn App() -> Element {
         tags: vec![],
         preview_url: None,
         exact_matches: vec![],
+        similar_matches: vec![],
+        visual_comparison_message: None,
         imported_count: 0,
         skipped_count: 0,
         message: String::new(),
@@ -835,6 +848,7 @@ pub fn App() -> Element {
                     tags: vec![],
                     preview_url: None,
                     exact_matches: vec![],
+                    similar_matches: vec![], visual_comparison_message: None,
                     imported_count: 0,
                     skipped_count: 0,
                     message: String::new(),
@@ -1180,7 +1194,10 @@ pub fn App() -> Element {
                     } else if step() == "review" {
                         p { class: "step-label success-label", "SAFE MEDIA REVIEW" }
                         if review_item().state == "item" || review_item().state == "unavailable" {
-                            h2 { "Decide on this item." }
+                            div { class: "review-heading",
+                                h2 { "Decide on this item." }
+                                button { class: "secondary-button review-close-button", r#type: "button", onclick: move |_| { error.set(String::new()); step.set("home".into()); }, disabled: busy(), "Close review" }
+                            }
                             p { class: "lede", "Every choice is explicit. Import creates a copy; Skip leaves the original exactly where it is." }
                             div { class: "review-card",
                                 div { class: "review-media-panel",
@@ -1199,6 +1216,19 @@ pub fn App() -> Element {
                                     label { class: "review-field", "Tags (comma-separated)" input { value: "{review_tags}", oninput: move |event| review_tags.set(event.value()), placeholder: "Family, summer" } }
                                     label { class: "review-field", "Import date" input { r#type: "date", value: "{import_date}", oninput: move |event| import_date.set(event.value()) } }
                                     p { class: "privacy-note", "Date source: {review_date_origin}. {review_item().message}" }
+                                    if let Some(message) = review_item().visual_comparison_message.clone() { p { class: "privacy-note", "{message}" } }
+                                    if !review_item().similar_matches.is_empty() {
+                                        div { class: "similar-history", "aria-label": "Possible similar pictures",
+                                            strong { "Possible similar pictures" }
+                                            for matched in review_item().similar_matches {
+                                                div { class: "similar-history-item",
+                                                    if let Some(url) = matched.preview_url { img { src: "{url}", alt: "Managed preview of {matched.filename}" } }
+                                                    small { "{matched.similarity_label}: {matched.filename} · {matched.decided_at}" }
+                                                    if !matched.tags.is_empty() { small { "Tags: " {matched.tags.join(", ")} } }
+                                                }
+                                            }
+                                        }
+                                    }
                                     if !review_item().exact_matches.is_empty() {
                                         div { class: "exact-history", "aria-label": "Exact file history",
                                             for matched in review_item().exact_matches {
@@ -1274,6 +1304,33 @@ mod review_layout_tests {
         }
         assert!(STYLES.contains(
             ".exact-history { display: grid; gap: .55rem; max-height: 12rem; overflow: auto;"
+        ));
+    }
+
+    #[test]
+    fn review_shows_bounded_advisory_similar_context_without_hiding_actions() {
+        let source = include_str!("app.rs");
+        for hook in [
+            "Possible similar pictures",
+            "similar_matches",
+            "visual_comparison_message",
+            "Possible similar picture",
+            "class: \"decision-actions\"",
+        ] {
+            assert!(source.contains(hook), "missing similarity hook: {hook}");
+        }
+        assert!(STYLES.contains(
+            ".similar-history { display: grid; gap: .45rem; max-height: 12rem; overflow: auto;"
+        ));
+    }
+
+    #[test]
+    fn close_review_returns_home_without_recording_a_decision() {
+        let source = include_str!("app.rs");
+        assert!(source.contains("\"Close review\""));
+        assert!(source.contains("step.set(\"home\".into());"));
+        assert!(source.contains(
+            "onclick: move |_| { error.set(String::new()); step.set(\"home\".into()); }"
         ));
     }
 

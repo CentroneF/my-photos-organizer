@@ -18,6 +18,10 @@ use crate::search;
 
 const CONTENT_FINGERPRINT_ALGORITHM: &str = "blake3-256-v1";
 const EXACT_HISTORY_LIMIT: usize = 3;
+const PERCEPTUAL_HASH_ALGORITHM: &str = "dhash-64-v1";
+const SIMILARITY_LIMIT: usize = 3;
+const SIMILARITY_THRESHOLD: u32 = 10;
+const MAX_DECODED_PIXELS: u64 = 40_000_000;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,6 +44,8 @@ pub struct ReviewItem {
     pub tags: Vec<String>,
     pub preview_url: Option<String>,
     pub exact_matches: Vec<ExactMatch>,
+    pub similar_matches: Vec<SimilarMatch>,
+    pub visual_comparison_message: Option<String>,
     pub imported_count: u64,
     pub skipped_count: u64,
     pub message: String,
@@ -54,6 +60,16 @@ pub struct ExactMatch {
     pub decided_at: String,
     pub tags: Vec<String>,
     pub preview_url: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimilarMatch {
+    pub filename: String,
+    pub decided_at: String,
+    pub tags: Vec<String>,
+    pub preview_url: Option<String>,
+    pub similarity_label: &'static str,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -265,6 +281,24 @@ pub fn next_review_item(app: tauri::AppHandle) -> Result<ReviewItem, ReviewError
         ).map_err(database_error)?;
         let exact_matches =
             exact_matches(connection, &app, library_path, candidate_id, &fingerprint)?;
+        let (similar_matches, visual_comparison_message) = match perceptual_hash(&path) {
+            Ok(hash) => {
+                connection.execute("UPDATE review_candidates SET perceptual_hash_algorithm = ?1, perceptual_hash_value = ?2, visual_comparison_state = 'available' WHERE id = ?3", params![PERCEPTUAL_HASH_ALGORITHM, hash as i64, candidate_id]).map_err(database_error)?;
+                (
+                    similar_matches(connection, &app, library_path, candidate_id, hash)?,
+                    None,
+                )
+            }
+            Err(message) => {
+                connection
+                    .execute(
+                        "UPDATE review_candidates SET visual_comparison_state = ?1 WHERE id = ?2",
+                        params![message.0, candidate_id],
+                    )
+                    .map_err(database_error)?;
+                (vec![], Some(message.1))
+            }
+        };
         let preview_url = match readable_file(&path) {
             Ok(()) => {
                 app.asset_protocol_scope().allow_file(&path).map_err(|_| {
@@ -299,6 +333,8 @@ pub fn next_review_item(app: tauri::AppHandle) -> Result<ReviewItem, ReviewError
             tags,
             preview_url,
             exact_matches,
+            similar_matches,
+            visual_comparison_message,
             imported_count: 0,
             skipped_count: 0,
             message:
@@ -394,6 +430,8 @@ fn completion_item_for_session(
             tags: vec![],
             preview_url: None,
             exact_matches: vec![],
+            similar_matches: vec![],
+            visual_comparison_message: None,
             imported_count,
             skipped_count,
             message: format!(
@@ -417,6 +455,8 @@ fn empty_item() -> ReviewItem {
         tags: vec![],
         preview_url: None,
         exact_matches: vec![],
+        similar_matches: vec![],
+        visual_comparison_message: None,
         imported_count: 0,
         skipped_count: 0,
         message: "There are no pending items in this review.".into(),
@@ -444,6 +484,8 @@ fn unavailable_item(
         tags,
         preview_url: None,
         exact_matches: vec![],
+        similar_matches: vec![],
+        visual_comparison_message: None,
         imported_count: 0,
         skipped_count: 0,
         message,
@@ -551,6 +593,117 @@ fn exact_matches(
         })
     })
     .collect()
+}
+
+fn perceptual_hash(path: &Path) -> Result<u64, (&'static str, String)> {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !matches!(extension.as_str(), "jpg" | "jpeg" | "png" | "webp" | "gif") {
+        return Err((
+            "unsupported",
+            "Visual comparison is unavailable for this media type; exact history is still checked."
+                .into(),
+        ));
+    }
+    let reader = image::ImageReader::open(path).map_err(|_| {
+        (
+            "decode_failed",
+            "Visual comparison is unavailable because this image could not be read.".into(),
+        )
+    })?;
+    let reader = reader.with_guessed_format().map_err(|_| {
+        (
+            "decode_failed",
+            "Visual comparison is unavailable because this image format could not be read.".into(),
+        )
+    })?;
+    let dimensions = reader.into_dimensions().map_err(|_| {
+        (
+            "decode_failed",
+            "Visual comparison is unavailable because this image could not be decoded.".into(),
+        )
+    })?;
+    if u64::from(dimensions.0) * u64::from(dimensions.1) > MAX_DECODED_PIXELS {
+        return Err((
+            "resource_limited",
+            "Visual comparison is unavailable because this image is too large to compare safely."
+                .into(),
+        ));
+    }
+    let image = image::open(path).map_err(|_| {
+        (
+            "decode_failed",
+            "Visual comparison is unavailable because this image could not be decoded.".into(),
+        )
+    })?;
+    let pixels = image
+        .resize_exact(9, 8, image::imageops::FilterType::Triangle)
+        .to_luma8();
+    let mut hash = 0_u64;
+    for y in 0..8 {
+        for x in 0..8 {
+            hash =
+                (hash << 1) | u64::from(pixels.get_pixel(x, y)[0] > pixels.get_pixel(x + 1, y)[0]);
+        }
+    }
+    Ok(hash)
+}
+
+fn similar_matches(
+    connection: &Connection,
+    app: &tauri::AppHandle,
+    root: &Path,
+    active_id: i64,
+    hash: u64,
+) -> Result<Vec<SimilarMatch>, ReviewError> {
+    let mut statement = connection.prepare("SELECT c.id, c.relative_path, d.decided_at, d.destination_path, c.perceptual_hash_value FROM review_candidates c JOIN item_decisions d ON d.candidate_id = c.id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND c.perceptual_hash_algorithm = ?1 AND c.id != ?2 AND c.content_fingerprint_value != (SELECT content_fingerprint_value FROM review_candidates WHERE id = ?2) ORDER BY d.decided_at DESC, c.id").map_err(database_error)?;
+    let rows = statement
+        .query_map(params![PERCEPTUAL_HASH_ALGORITHM, active_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })
+        .map_err(database_error)?;
+    let mut candidates = Vec::new();
+    for row in rows {
+        let (id, relative_path, decided_at, destination, candidate_hash) =
+            row.map_err(database_error)?;
+        let distance = (hash ^ candidate_hash as u64).count_ones();
+        if distance > SIMILARITY_THRESHOLD {
+            continue;
+        }
+        candidates.push((distance, id, relative_path, decided_at, destination));
+    }
+    candidates.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| right.3.cmp(&left.3))
+            .then_with(|| left.1.cmp(&right.1))
+    });
+    Ok(candidates
+        .into_iter()
+        .take(SIMILARITY_LIMIT)
+        .map(|(_, id, relative_path, decided_at, destination)| {
+            Ok::<_, ReviewError>(SimilarMatch {
+                filename: Path::new(&relative_path)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+                decided_at,
+                tags: candidate_tags(connection, id)?,
+                preview_url: search::safe_preview_url(app, root, Path::new(&destination)).0,
+                similarity_label: "Possible similar picture",
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?)
 }
 fn review_state(connection: &Connection) -> Result<ReviewState, ReviewError> {
     match connection.query_row("SELECT source_path, state, (SELECT count(*) FROM review_candidates WHERE session_id = review_sessions.id AND decision IS NULL) FROM review_sessions ORDER BY id DESC LIMIT 1", [], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, u64>(2)?))) { Ok((source_path, state, candidate_count)) => Ok(ReviewState { state: if state == "complete" { "complete" } else { "resumable" }, source_path: Some(source_path), candidate_count, message: if state == "complete" { "Resume to check this source for newly added supported files. Originals are never modified.".into() } else { "Resume the safe read-only review. Originals are never modified.".into() } }), Err(rusqlite::Error::QueryReturnedNoRows) => Ok(ReviewState { state: "none", source_path: None, candidate_count: 0, message: "No unfinished review is available.".into() }), Err(error) => Err(database_error(error)) }
@@ -988,6 +1141,54 @@ mod tests {
             fingerprint_file(&different, different_metadata.0, different_metadata.1).unwrap()
         );
         assert_eq!(fs::read(&first).unwrap(), b"same bytes");
+    }
+
+    #[test]
+    fn dhash_calibration_accepts_a_small_brightness_change_but_rejects_an_unrelated_image() {
+        let _session_guard = library::test_session_guard();
+        let directory = tempdir().unwrap();
+        let base = directory.path().join("base.png");
+        let brighter = directory.path().join("brighter.png");
+        let unrelated = directory.path().join("unrelated.png");
+        let base_image = image::RgbImage::from_fn(48, 48, |x, y| {
+            image::Rgb([(x * 5) as u8, (y * 5) as u8, ((x + y) * 2) as u8])
+        });
+        let brighter_image = image::RgbImage::from_fn(48, 48, |x, y| {
+            image::Rgb([
+                ((x * 5) + 10) as u8,
+                ((y * 5) + 10) as u8,
+                (((x + y) * 2) + 10) as u8,
+            ])
+        });
+        let unrelated_image = image::RgbImage::from_fn(48, 48, |x, y| {
+            image::Rgb([
+                if (x / 6 + y / 6) % 2 == 0 { 0 } else { 255 },
+                255 - (x * 5) as u8,
+                0,
+            ])
+        });
+        base_image.save(&base).unwrap();
+        brighter_image.save(&brighter).unwrap();
+        unrelated_image.save(&unrelated).unwrap();
+        let base_hash = perceptual_hash(&base).unwrap();
+        assert!(
+            (base_hash ^ perceptual_hash(&brighter).unwrap()).count_ones() <= SIMILARITY_THRESHOLD
+        );
+        assert!(
+            (base_hash ^ perceptual_hash(&unrelated).unwrap()).count_ones() > SIMILARITY_THRESHOLD
+        );
+    }
+
+    #[test]
+    fn visual_comparison_reports_unsupported_and_decode_failure() {
+        let _session_guard = library::test_session_guard();
+        let directory = tempdir().unwrap();
+        let video = directory.path().join("clip.mp4");
+        let corrupt = directory.path().join("broken.png");
+        fs::write(&video, b"video").unwrap();
+        fs::write(&corrupt, b"not an image").unwrap();
+        assert_eq!(perceptual_hash(&video).unwrap_err().0, "unsupported");
+        assert_eq!(perceptual_hash(&corrupt).unwrap_err().0, "decode_failed");
     }
 
     #[test]

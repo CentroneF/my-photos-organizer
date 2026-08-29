@@ -224,27 +224,27 @@ Format 6 introduces nullable fingerprint/status fields so existing format-5 deci
 
 #### Automated
 
-- [x] 1.1 `cargo test --workspace` passes with migration, exact history, revision, and source-preservation coverage.
-- [x] 1.2 `cargo check --workspace` succeeds with synchronized DTOs and no new capability permission.
-- [x] 1.3 Exact-match tests prove equality/difference handling, capped order, and no skipped preview URL.
+- [x] 1.1 `cargo test --workspace` passes with migration, exact history, revision, and source-preservation coverage. — 8806420
+- [x] 1.2 `cargo check --workspace` succeeds with synchronized DTOs and no new capability permission. — 8806420
+- [x] 1.3 Exact-match tests prove equality/difference handling, capped order, and no skipped preview URL. — 8806420
 
 #### Manual
 
-- [x] 1.4 Imported and skipped exact-history contexts are correct, bounded, and leave decisions explicit.
-- [x] 1.5 A changed same-path file is presented as newly pending without modifying its source.
+- [x] 1.4 Imported and skipped exact-history contexts are correct, bounded, and leave decisions explicit. — 8806420
+- [x] 1.5 A changed same-path file is presented as newly pending without modifying its source. — 8806420
 
 ### Phase 2: Similar-picture context for supported still images
 
 #### Automated
 
-- [ ] 2.1 `cargo test --workspace` passes with supported-format hashing, fixture calibration, safety states, and imported-only similarity coverage.
-- [ ] 2.2 `cargo check --workspace` succeeds with pinned dependencies and synchronized DTOs.
-- [ ] 2.3 UI tests prove bounded advisory context, unavailable state, responsiveness, and retained actions.
+- [x] 2.1 `cargo test --workspace` passes with supported-format hashing, fixture calibration, safety states, and imported-only similarity coverage.
+- [x] 2.2 `cargo check --workspace` succeeds with pinned dependencies and synchronized DTOs.
+- [x] 2.3 UI tests prove bounded advisory context, unavailable state, responsiveness, and retained actions.
 
 #### Manual
 
-- [ ] 2.4 Similar supported images show compact managed comparisons; unrelated images do not.
-- [ ] 2.5 HEIC/video unavailable states are honest and the narrow review layout retains both actions.
+- [x] 2.4 Similar supported images show compact managed comparisons; unrelated images do not.
+- [x] 2.5 HEIC/video unavailable states are honest and the narrow review layout retains both actions.
 
 ### Phase 3: Recovery, migration, and safety hardening
 
