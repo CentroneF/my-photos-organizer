@@ -3,6 +3,7 @@
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 static CSS: Asset = asset!("/assets/styles.css");
 
@@ -10,6 +11,37 @@ static CSS: Asset = asset!("/assets/styles.css");
 extern "C" {
     #[wasm_bindgen(catch, js_namespace = ["window", "__TAURI__", "core"])]
     async fn invoke(cmd: &str, args: JsValue) -> Result<JsValue, JsValue>;
+}
+
+#[wasm_bindgen(inline_js = r#"
+export function warm_video_preview(video) {
+  return new Promise((resolve, reject) => {
+    let fallback_pause;
+    const pause_after_first_frame = () => {
+      clearTimeout(fallback_pause);
+      video.pause();
+      resolve();
+    };
+    const schedule_pause_after_frame = () => {
+      if (typeof video.requestVideoFrameCallback === "function") {
+        video.requestVideoFrameCallback(pause_after_first_frame);
+      } else {
+        requestAnimationFrame(() => requestAnimationFrame(pause_after_first_frame));
+      }
+    };
+    video.addEventListener("playing", schedule_pause_after_frame, { once: true });
+    fallback_pause = setTimeout(pause_after_first_frame, 250);
+    video.play().catch((error) => {
+      clearTimeout(fallback_pause);
+      video.removeEventListener("playing", schedule_pause_after_frame);
+      reject(error);
+    });
+  });
+}
+"#)]
+extern "C" {
+    #[wasm_bindgen(catch)]
+    fn warm_video_preview(video: &web_sys::HtmlVideoElement) -> Result<js_sys::Promise, JsValue>;
 }
 
 #[derive(Serialize)]
@@ -244,6 +276,66 @@ fn command_error(value: JsValue, fallback: &str) -> String {
     serde_wasm_bindgen::from_value::<CommandError>(value)
         .map(|error| error.message)
         .unwrap_or_else(|_| fallback.to_owned())
+}
+
+fn video_target(event: &MediaEvent) -> Option<web_sys::HtmlVideoElement> {
+    event
+        .data()
+        .downcast::<web_sys::Event>()
+        .and_then(|event| event.target())
+        .and_then(|target| target.dyn_into::<web_sys::HtmlVideoElement>().ok())
+}
+
+#[component]
+fn VideoCardPreview(preview_url: String) -> Element {
+    let mut presentation = use_signal(|| "loading".to_owned());
+    let video_class = if matches!(presentation().as_str(), "ready" | "error") {
+        "media-card-video media-card-video-ready"
+    } else {
+        "media-card-video media-card-video-pending"
+    };
+
+    rsx! {
+        video {
+            class: "{video_class}",
+            muted: true,
+            preload: "auto",
+            controls: true,
+            src: "{preview_url}",
+            onloadeddata: move |event| {
+                if presentation() != "loading" {
+                    return;
+                }
+                let Some(video) = video_target(&event) else {
+                    presentation.set("error".into());
+                    return;
+                };
+                match warm_video_preview(&video) {
+                    Ok(warmed_preview) => {
+                        spawn(async move {
+                            if wasm_bindgen_futures::JsFuture::from(warmed_preview)
+                                .await
+                                .is_ok()
+                            {
+                                presentation.set("ready".into());
+                            } else {
+                                presentation.set("error".into());
+                            }
+                        });
+                    }
+                    Err(_) => {
+                        presentation.set("error".into());
+                    }
+                }
+            },
+            onerror: move |_| presentation.set("error".into()),
+        }
+        if presentation() == "loading" {
+            p { class: "preview-fallback video-preview-fallback", "Preparing video preview…" }
+        } else if presentation() == "error" {
+            p { class: "preview-fallback video-preview-fallback", "Video preview unavailable — press Play to view" }
+        }
+    }
 }
 
 pub fn App() -> Element {
@@ -1026,7 +1118,7 @@ pub fn App() -> Element {
                             if search_date_field() == "original" { p { class: "privacy-note", "Original dates are available only for imports made after this feature was added. Earlier imports remain searchable by selected import date." } }
                             if search_loading() { p { class: "privacy-note", "Loading imported media…" } }
                             if !search_loading() && search_items().is_empty() { div { class: "library-empty", "data-testid": "library-empty-state", h3 { "No media has been imported yet." } p { "Use Import media to safely review a folder and create managed copies. Originals are never moved or deleted." } button { class: "primary-button", r#type: "button", onclick: move |_| step.set("import".into()), "Import media" } } }
-                            if !search_loading() && !search_items().is_empty() { div { class: "media-grid", "data-testid": "library-search-grid", for item in search_items() { article { class: "media-card", div { class: "media-card-preview", if item.preview_state == "available" && item.preview_url.is_some() { if item.media_type == "video" { video { muted: true, preload: "metadata", controls: true, src: "{item.preview_url.clone().unwrap_or_default()}" } } else { img { src: "{item.preview_url.clone().unwrap_or_default()}", alt: "Preview of {item.filename}" } } } else { p { class: "preview-fallback", "Preview unavailable" } } } div { class: "media-card-details", strong { "{item.filename}" } small { "{item.media_type}" } small { "Selected: " {item.effective_import_date.clone().unwrap_or_else(|| "unavailable".into())} } small { "Original: " {item.original_media_date.clone().unwrap_or_else(|| "not recorded".into())} } if !item.tags.is_empty() { small { "Tags: " {item.tags.join(", ")} } } } } } } }
+                            if !search_loading() && !search_items().is_empty() { div { class: "media-grid", "data-testid": "library-search-grid", for item in search_items() { article { class: "media-card", div { class: "media-card-preview", if item.preview_state == "available" && item.preview_url.is_some() { if item.media_type == "video" { VideoCardPreview { key: "{item.preview_url.clone().unwrap_or_default()}", preview_url: item.preview_url.clone().unwrap_or_default() } } else { img { src: "{item.preview_url.clone().unwrap_or_default()}", alt: "Preview of {item.filename}" } } } else { p { class: "preview-fallback", "Preview unavailable" } } } div { class: "media-card-details", strong { "{item.filename}" } small { "{item.media_type}" } small { "Selected: " {item.effective_import_date.clone().unwrap_or_else(|| "unavailable".into())} } small { "Original: " {item.original_media_date.clone().unwrap_or_else(|| "not recorded".into())} } if !item.tags.is_empty() { small { "Tags: " {item.tags.join(", ")} } } } } } } }
                         }
                     } else if step() == "import" {
                         h2 { class: "import-title", "Choose where to import from." }
@@ -1153,6 +1245,36 @@ mod review_layout_tests {
             "Original dates are available only for imports made after this feature was added",
         ] {
             assert!(source.contains(hook), "missing library-search hook: {hook}");
+        }
+    }
+
+    #[test]
+    fn video_card_waits_for_a_first_frame_and_keeps_a_labelled_fallback() {
+        let source = include_str!("app.rs");
+        for hook in [
+            "fn VideoCardPreview(preview_url: String)",
+            "preload: \"auto\"",
+            "fn video_target(event: &MediaEvent)",
+            "onloadeddata: move |event|",
+            "warm_video_preview(&video)",
+            "video.requestVideoFrameCallback(pause_after_first_frame)",
+            "fallback_pause = setTimeout(pause_after_first_frame, 250)",
+            "video.pause();",
+            "onerror: move |_| presentation.set(\"error\".into())",
+            "Preparing video preview…",
+            "Video preview unavailable — press Play to view",
+            "media-card-video-pending",
+            "media-card-video-ready",
+        ] {
+            assert!(source.contains(hook), "missing video-card hook: {hook}");
+        }
+
+        for rule in [
+            ".media-card-video-pending { visibility: hidden; }",
+            ".media-card-video-ready { visibility: visible; }",
+            ".video-preview-fallback { grid-area: 1 / 1; pointer-events: none; }",
+        ] {
+            assert!(STYLES.contains(rule), "missing video-card style: {rule}");
         }
     }
 }

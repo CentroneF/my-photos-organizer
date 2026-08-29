@@ -309,10 +309,10 @@ The catalogue format increases once for the phase-one search indexes and again f
 
 #### Automated
 
-- [ ] 3.1 Add video-card first-frame readiness, labelled loading/error fallbacks, and responsive styles
-- [ ] 3.2 Run `cargo test --workspace` for video-card presentation coverage
-- [ ] 3.3 Run `cargo tauri build`
+- [x] 3.1 Add video-card first-frame readiness, labelled loading/error fallbacks, and responsive styles
+- [x] 3.2 Run `cargo test --workspace` for video-card presentation coverage
+- [x] 3.3 Run `cargo tauri build`
 
 #### Manual
 
-- [ ] 3.4 Verify pre-interaction first-frame display, fallback metadata, normal playback, and unchanged source safety
+- [x] 3.4 Verify pre-interaction first-frame display, fallback metadata, normal playback, and unchanged source safety
