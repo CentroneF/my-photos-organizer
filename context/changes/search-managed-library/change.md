@@ -1,7 +1,7 @@
 ---
 change_id: search-managed-library
 title: Search managed library
-status: implementing
+status: implemented
 created: 2026-08-28
 updated: 2026-08-29
 archived_at: null

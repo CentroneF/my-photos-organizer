@@ -290,7 +290,7 @@ The catalogue format increases once for the phase-one search indexes and again f
 
 #### Manual
 
-- [ ] 1.5 Verify the default-after-unlock grid, filters, empty-state import action, preview fallbacks, and source safety
+- [x] 1.5 Verify the default-after-unlock grid, filters, empty-state import action, preview fallbacks, and source safety
 
 ### Phase 2: Original-date search and tag suggestions
 
@@ -303,16 +303,16 @@ The catalogue format increases once for the phase-one search indexes and again f
 
 #### Manual
 
-- [ ] 2.5 Verify both date modes, tag suggestions, AND filtering, and behavior for legacy imported records
+- [x] 2.5 Verify both date modes, tag suggestions, AND filtering, and behavior for legacy imported records
 
 ### Phase 3: Dependable video-card previews
 
 #### Automated
 
-- [x] 3.1 Add video-card first-frame readiness, labelled loading/error fallbacks, and responsive styles
-- [x] 3.2 Run `cargo test --workspace` for video-card presentation coverage
-- [x] 3.3 Run `cargo tauri build`
+- [x] 3.1 Add video-card first-frame readiness, labelled loading/error fallbacks, and responsive styles — ca8d123
+- [x] 3.2 Run `cargo test --workspace` for video-card presentation coverage — ca8d123
+- [x] 3.3 Run `cargo tauri build` — ca8d123
 
 #### Manual
 
-- [x] 3.4 Verify pre-interaction first-frame display, fallback metadata, normal playback, and unchanged source safety
+- [x] 3.4 Verify pre-interaction first-frame display, fallback metadata, normal playback, and unchanged source safety — ca8d123
