@@ -268,6 +268,7 @@ pub fn skip_review_item(request: DecideRequest) -> Result<DecisionResult, Review
             &request.tags,
             None,
             None,
+            None,
         )?;
         Ok(DecisionResult {
             decision: "skipped",
@@ -282,6 +283,7 @@ pub fn import_review_item(request: ImportRequest) -> Result<DecisionResult, Revi
         let (source_path, relative_path) = pending_candidate(connection, request.candidate_id)?;
         let source = Path::new(&source_path).join(relative_path);
         readable_file(&source).map_err(|message| error("candidate_unavailable", message))?;
+        let original_date = effective_date(&source);
         let destination = publish_copy(&source, library_path, &date)?;
         if let Err(record_error) = record_decision(
             connection,
@@ -290,6 +292,9 @@ pub fn import_review_item(request: ImportRequest) -> Result<DecisionResult, Revi
             &request.tags,
             Some(&destination),
             Some(&date),
+            original_date
+                .as_ref()
+                .map(|(date, origin)| (date.as_str(), origin.as_str())),
         ) {
             return Err(error("post_copy_catalogue_failure", format!("The file was copied to {} but its catalogue decision could not be saved. Do not import it again; reopen the library and recover this item. ({})", destination.display(), record_error.message)));
         }
@@ -382,6 +387,7 @@ fn record_decision(
     tags: &[String],
     destination: Option<&Path>,
     date: Option<&str>,
+    original_date: Option<(&str, &str)>,
 ) -> Result<(), ReviewError> {
     pending_candidate(connection, candidate_id)?;
     let transaction = connection.unchecked_transaction().map_err(database_error)?;
@@ -395,7 +401,7 @@ fn record_decision(
             params![decision, candidate_id],
         )
         .map_err(database_error)?;
-    transaction.execute("INSERT INTO item_decisions (candidate_id, decision, destination_path, effective_import_date, date_origin) VALUES (?1, ?2, ?3, ?4, ?5)", params![candidate_id, decision, destination.map(|path| path.display().to_string()), date, if date.is_some() { Some("user") } else { None }]).map_err(database_error)?;
+    transaction.execute("INSERT INTO item_decisions (candidate_id, decision, destination_path, effective_import_date, date_origin, original_media_date, original_date_origin) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)", params![candidate_id, decision, destination.map(|path| path.display().to_string()), date, if date.is_some() { Some("user") } else { None }, original_date.map(|(date, _)| date), original_date.map(|(_, origin)| origin)]).map_err(database_error)?;
     transaction
         .execute(
             "UPDATE review_sessions SET state = 'complete' WHERE id = (SELECT session_id FROM review_candidates WHERE id = ?1) AND NOT EXISTS (SELECT 1 FROM review_candidates WHERE session_id = (SELECT session_id FROM review_candidates WHERE id = ?1) AND decision IS NULL)",
@@ -829,6 +835,61 @@ mod tests {
             fs::read(source_dir.path().join("keep.jpg")).unwrap(),
             b"original bytes"
         );
+    }
+
+    #[test]
+    fn importing_preserves_the_original_discovered_date_across_reopen() {
+        let _session_guard = library::test_session_guard();
+        let library_dir = tempdir().unwrap();
+        let source_dir = tempdir().unwrap();
+        fs::write(
+            source_dir.path().join("dated.jpg"),
+            b"Exif 2020:07:14 10:20:30",
+        )
+        .unwrap();
+        library::setup_library(library::SetupLibraryRequest {
+            folder_path: library_dir.path().display().to_string(),
+            password: "correct horse battery staple".into(),
+            password_confirmation: "correct horse battery staple".into(),
+            recovery_question: "First pet?".into(),
+            recovery_answer: "Mochi".into(),
+        })
+        .unwrap();
+        start_review(&source_dir.path().display().to_string()).unwrap();
+        let candidate_id = library::with_catalogue(|connection, _| {
+            connection
+                .query_row("SELECT id FROM review_candidates", [], |row| row.get(0))
+                .map_err(database_error)
+        })
+        .unwrap();
+        import_review_item(ImportRequest {
+            candidate_id,
+            tags: vec![],
+            effective_import_date: "2026-08-28".into(),
+        })
+        .unwrap();
+        library::lock_library();
+        library::unlock_library(
+            &library_dir.path().display().to_string(),
+            library::UnlockLibraryRequest {
+                password: "correct horse battery staple".into(),
+            },
+        )
+        .unwrap();
+        let dates = library::with_catalogue(|connection, _| {
+            connection
+                .query_row(
+                    "SELECT effective_import_date, original_media_date, original_date_origin FROM item_decisions",
+                    [],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?)),
+                )
+                .map_err(database_error)
+        })
+        .unwrap();
+        assert_eq!(dates.0, "2026-08-28");
+        assert_eq!(dates.1.as_deref(), Some("2020-07-14"));
+        assert_eq!(dates.2.as_deref(), Some("metadata"));
+        library::lock_library();
     }
     #[test]
     fn review_commands_require_an_unlocked_library_session() {

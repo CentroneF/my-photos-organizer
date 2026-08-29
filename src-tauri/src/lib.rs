@@ -1,6 +1,7 @@
 mod import_source;
 mod library;
 mod review;
+mod search;
 
 #[tauri::command]
 fn start_review(
@@ -31,6 +32,21 @@ fn import_review_item(
     request: review::ImportRequest,
 ) -> Result<review::DecisionResult, review::ReviewError> {
     review::import_review_item(request)
+}
+
+#[tauri::command]
+fn search_library(
+    app: tauri::AppHandle,
+    request: search::SearchLibraryRequest,
+) -> Result<search::SearchLibraryResult, search::SearchError> {
+    search::search_library(app, request)
+}
+
+#[tauri::command]
+fn suggest_library_tags(
+    request: search::TagSuggestionRequest,
+) -> Result<search::TagSuggestionResult, search::SearchError> {
+    search::suggest_library_tags(request)
 }
 
 #[tauri::command]
@@ -227,6 +243,8 @@ pub fn run() {
             next_review_item,
             skip_review_item,
             import_review_item,
+            search_library,
+            suggest_library_tags,
             lock_library,
             open_library_folder,
             clean_library,
