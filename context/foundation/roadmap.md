@@ -84,8 +84,7 @@ No standalone foundation is proposed. The absent data and access-control layers 
 - **Blockers:** —
 - **Unknowns:** —
 - **Risk:** Source selection must remain distinct from the fixed managed-library location so original media stays untouched.
-- **Status:** complete
-- **Note:** Visual similarity is intentionally limited to supported still images. Visual video similarity remains a separately framed future decoder/distribution decision; videos retain exact-history context only.
+- **Status:** proposed
 
 ### S-03: Review, tag, and decide on media
 

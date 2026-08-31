@@ -145,19 +145,33 @@ pub fn start_review(source_path: &str) -> Result<ReviewState, ReviewError> {
             let mut additions = 0;
             for candidate in &candidates {
                 let latest = transaction.query_row(
-                    "SELECT file_size, modified_at, media_type, revision FROM review_candidates WHERE session_id = ?1 AND relative_path = ?2 ORDER BY revision DESC LIMIT 1",
+                    "SELECT file_size, modified_at, media_type, revision, content_fingerprint_value FROM review_candidates WHERE session_id = ?1 AND relative_path = ?2 ORDER BY revision DESC LIMIT 1",
                     params![session_id, candidate.relative_path],
-                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?)),
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?, row.get::<_, Option<Vec<u8>>>(4)?)),
                 ).optional().map_err(database_error)?;
                 let revision = match latest {
-                    Some((size, modified, media_type, _revision))
+                    Some((size, modified, media_type, _revision, fingerprint))
                         if size == candidate.file_size
                             && modified == candidate.modified_at
                             && media_type == candidate.media_type =>
                     {
-                        continue
+                        let unchanged = fingerprint
+                            .map(|fingerprint| {
+                                fingerprint_file(
+                                    &source.join(&candidate.relative_path),
+                                    candidate.file_size,
+                                    candidate.modified_at,
+                                )
+                                .map(|current| current == fingerprint)
+                                .unwrap_or(false)
+                            })
+                            .unwrap_or(true);
+                        if unchanged {
+                            continue;
+                        }
+                        _revision + 1
                     }
-                    Some((_, _, _, revision)) => revision + 1,
+                    Some((_, _, _, revision, _)) => revision + 1,
                     None => 1,
                 };
                 additions += transaction.execute(
@@ -300,7 +314,7 @@ pub fn next_review_item(app: tauri::AppHandle) -> Result<ReviewItem, ReviewError
         };
         let (similar_matches, visual_comparison_message) = match visual_result {
             Ok(hash) => {
-                if connection.execute("UPDATE review_candidates SET perceptual_hash_algorithm = ?1, perceptual_hash_value = ?2, visual_comparison_state = 'available' WHERE id = ?3", params![PERCEPTUAL_HASH_ALGORITHM, hash as i64, candidate_id]).is_err() {
+                if connection.execute("UPDATE review_candidates SET perceptual_hash_algorithm = ?1, perceptual_hash_value = ?2, perceptual_hash_threshold = ?3, visual_comparison_state = 'available' WHERE id = ?4", params![PERCEPTUAL_HASH_ALGORITHM, hash as i64, SIMILARITY_THRESHOLD as i64, candidate_id]).is_err() {
                     return Ok(unavailable_item(candidate_id, relative_path, filename, media_type, date, origin, tags, "Comparison results could not be saved. Refresh the review and try again; no decision was made.".into()));
                 }
                 let matches = match similar_matches(connection, &app, library_path, candidate_id, hash) {
@@ -692,17 +706,24 @@ fn similar_matches(
     active_id: i64,
     hash: u64,
 ) -> Result<Vec<SimilarMatch>, ReviewError> {
-    let mut statement = connection.prepare("SELECT c.id, c.relative_path, d.decided_at, d.destination_path, c.perceptual_hash_value FROM review_candidates c JOIN item_decisions d ON d.candidate_id = c.id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND c.perceptual_hash_algorithm = ?1 AND c.id != ?2 AND c.content_fingerprint_value != (SELECT content_fingerprint_value FROM review_candidates WHERE id = ?2) ORDER BY d.decided_at DESC, c.id").map_err(database_error)?;
+    let mut statement = connection.prepare("SELECT c.id, c.relative_path, d.decided_at, d.destination_path, c.perceptual_hash_value FROM review_candidates c JOIN item_decisions d ON d.candidate_id = c.id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND c.perceptual_hash_algorithm = ?1 AND c.perceptual_hash_threshold = ?2 AND c.id != ?3 AND c.content_fingerprint_value != (SELECT content_fingerprint_value FROM review_candidates WHERE id = ?3) ORDER BY d.decided_at DESC, c.id").map_err(database_error)?;
     let rows = statement
-        .query_map(params![PERCEPTUAL_HASH_ALGORITHM, active_id], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, i64>(4)?,
-            ))
-        })
+        .query_map(
+            params![
+                PERCEPTUAL_HASH_ALGORITHM,
+                SIMILARITY_THRESHOLD as i64,
+                active_id
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )
         .map_err(database_error)?;
     let mut candidates = Vec::new();
     for row in rows {
@@ -1284,6 +1305,67 @@ mod tests {
             fs::read(&source).unwrap(),
             b"second original with different size"
         );
+    }
+
+    #[test]
+    fn resume_appends_a_revision_when_same_metadata_has_different_bytes() {
+        let _session_guard = library::test_session_guard();
+        let library_dir = tempdir().unwrap();
+        let source_dir = tempdir().unwrap();
+        let source = source_dir.path().join("same.jpg");
+        fs::write(&source, b"first-original").unwrap();
+        let original_metadata = stable_metadata(&source).unwrap();
+        let original_fingerprint =
+            fingerprint_file(&source, original_metadata.0, original_metadata.1).unwrap();
+        library::setup_library(library::SetupLibraryRequest {
+            folder_path: library_dir.path().display().to_string(),
+            password: "correct horse battery staple".into(),
+            password_confirmation: "correct horse battery staple".into(),
+            recovery_question: "First pet?".into(),
+            recovery_answer: "Mochi".into(),
+        })
+        .unwrap();
+        start_review(&source_dir.path().display().to_string()).unwrap();
+        let first_id = library::with_catalogue(|connection, _| {
+            connection
+                .query_row("SELECT id FROM review_candidates", [], |row| row.get(0))
+                .map_err(database_error)
+        })
+        .unwrap();
+        skip_review_item(DecideRequest {
+            candidate_id: first_id,
+            tags: vec![],
+        })
+        .unwrap();
+        fs::write(&source, b"second-originl").unwrap();
+        let replacement_metadata = stable_metadata(&source).unwrap();
+        assert_eq!(replacement_metadata.0, original_metadata.0);
+        library::with_catalogue(|connection, _| {
+            connection
+                .execute(
+                    "UPDATE review_candidates SET modified_at = ?1, content_fingerprint_algorithm = ?2, content_fingerprint_value = ?3 WHERE id = ?4",
+                    params![replacement_metadata.1, CONTENT_FINGERPRINT_ALGORITHM, original_fingerprint, first_id],
+                )
+                .map_err(database_error)?;
+            Ok::<_, ReviewError>(())
+        })
+        .unwrap();
+
+        let resumed = start_review(&source_dir.path().display().to_string()).unwrap();
+        assert_eq!(resumed.candidate_count, 1);
+        let rows: Vec<(i64, Option<String>)> = library::with_catalogue(|connection, _| {
+            let mut statement = connection
+                .prepare("SELECT revision, decision FROM review_candidates WHERE relative_path = 'same.jpg' ORDER BY revision")
+                .map_err(database_error)?;
+            let rows = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(database_error)?
+                .collect::<Result<_, _>>()
+                .map_err(database_error);
+            rows
+        })
+        .unwrap();
+        assert_eq!(rows, vec![(1, Some("skipped".into())), (2, None)]);
     }
 
     #[test]

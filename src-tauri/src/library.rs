@@ -20,7 +20,7 @@ const MARKER_FILE: &str = "library.json";
 const DATABASE_FILE: &str = "catalogue.db";
 const LIBRARY_POINTER_FILE: &str = "selected-library.json";
 const MARKER_FORMAT_VERSION: u32 = 1;
-const CATALOGUE_FORMAT_VERSION: u32 = 7;
+const CATALOGUE_FORMAT_VERSION: u32 = 8;
 const KEY_BYTES: usize = 32;
 const SALT_BYTES: usize = 16;
 const NONCE_BYTES: usize = 12;
@@ -739,6 +739,8 @@ fn initialize_catalogue(
         .map_err(|error| SetupLibraryError::new("initialization_failed", format!("Could not initialize catalogue schema: {error}")))?;
     connection.execute_batch("ALTER TABLE review_candidates ADD COLUMN perceptual_hash_algorithm TEXT NULL; ALTER TABLE review_candidates ADD COLUMN perceptual_hash_value INTEGER NULL; ALTER TABLE review_candidates ADD COLUMN visual_comparison_state TEXT NULL; CREATE INDEX review_candidates_perceptual_hash_idx ON review_candidates(perceptual_hash_algorithm, perceptual_hash_value); UPDATE schema_migrations SET version = 7; UPDATE library_identity SET format_version = 7;")
         .map_err(|error| SetupLibraryError::new("initialization_failed", format!("Could not initialize catalogue schema: {error}")))?;
+    connection.execute_batch("ALTER TABLE review_candidates ADD COLUMN perceptual_hash_threshold INTEGER NULL; UPDATE schema_migrations SET version = 8; UPDATE library_identity SET format_version = 8;")
+        .map_err(|error| SetupLibraryError::new("initialization_failed", format!("Could not initialize catalogue schema: {error}")))?;
     Ok(())
 }
 
@@ -947,6 +949,11 @@ fn validate_catalogue(
         }
         if version < 7 {
             transaction.execute_batch("ALTER TABLE review_candidates ADD COLUMN perceptual_hash_algorithm TEXT NULL; ALTER TABLE review_candidates ADD COLUMN perceptual_hash_value INTEGER NULL; ALTER TABLE review_candidates ADD COLUMN visual_comparison_state TEXT NULL; CREATE INDEX IF NOT EXISTS review_candidates_perceptual_hash_idx ON review_candidates(perceptual_hash_algorithm, perceptual_hash_value);")
+                .map_err(|_| SetupLibraryError::new("library_migration_failed", "Could not migrate the protected library catalogue."))?;
+        }
+        if version < 8 {
+            transaction
+                .execute_batch("ALTER TABLE review_candidates ADD COLUMN perceptual_hash_threshold INTEGER NULL;")
                 .map_err(|_| SetupLibraryError::new("library_migration_failed", "Could not migrate the protected library catalogue."))?;
         }
         transaction
@@ -1274,8 +1281,16 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
+        let threshold_column_count: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('review_candidates') WHERE name = 'perceptual_hash_threshold'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         key.fill(0);
         assert_eq!(version, CATALOGUE_FORMAT_VERSION);
+        assert_eq!(threshold_column_count, 1);
     }
 
     #[test]
