@@ -1,7 +1,7 @@
 ---
 change_id: show-duplicate-and-history-context
 title: Show duplicate and history context
-status: impl_reviewed
+status: implemented
 created: 2026-08-29
 updated: 2026-08-31
 archived_at: null

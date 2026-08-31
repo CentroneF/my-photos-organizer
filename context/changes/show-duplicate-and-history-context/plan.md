@@ -230,8 +230,8 @@ Format 6 introduces nullable fingerprint/status fields so existing format-5 deci
 
 #### Manual
 
-- [ ] 1.4 Imported and skipped exact-history contexts are correct, bounded, and leave decisions explicit.
-- [ ] 1.5 A changed same-path file is presented as newly pending without modifying its source.
+- [x] 1.4 Imported and skipped exact-history contexts are correct, bounded, and leave decisions explicit.
+- [x] 1.5 A changed same-path file is presented as newly pending without modifying its source.
 
 ### Phase 2: Similar-picture context for supported still images
 
@@ -243,8 +243,8 @@ Format 6 introduces nullable fingerprint/status fields so existing format-5 deci
 
 #### Manual
 
-- [ ] 2.4 Similar supported images show compact managed comparisons; unrelated images do not.
-- [ ] 2.5 HEIC/video unavailable states are honest and the narrow review layout retains both actions.
+- [x] 2.4 Similar supported images show compact managed comparisons; unrelated images do not.
+- [x] 2.5 HEIC/video unavailable states are honest and the narrow review layout retains both actions.
 
 ### Phase 3: Recovery, migration, and safety hardening
 
@@ -255,5 +255,5 @@ Format 6 introduces nullable fingerprint/status fields so existing format-5 deci
 
 #### Manual
 
-- [ ] 3.3 The desktop import/skip/restart/review loop preserves originals and keeps history/preview boundaries safe.
-- [ ] 3.4 Unavailable or changed candidates show recoverable feedback without false matches or automatic decisions.
+- [x] 3.3 The desktop import/skip/restart/review loop preserves originals and keeps history/preview boundaries safe.
+- [x] 3.4 Unavailable or changed candidates show recoverable feedback without false matches or automatic decisions.
