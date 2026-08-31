@@ -3,7 +3,7 @@ project: "Photo Handler"
 version: 1
 status: draft
 created: 2026-08-21
-updated: 2026-08-21
+updated: 2026-08-31
 prd_version: 1
 main_goal: market-feedback
 top_blocker: decisions
@@ -32,7 +32,7 @@ Photo Handler gives a person a local catalogue of their own photos, videos, and 
 | S-01 | protected-library-setup | set up a fixed, protected managed library and reopen its existing state | — | FR-001 | ready |
 | S-02 | choose-import-folder | choose a folder of photos and videos as an import source | S-01 | FR-002 | proposed |
 | S-03 | review-and-decide-media | review an import item, tag it, and explicitly import or skip it | S-01, S-02 | US-01, FR-003, FR-004, FR-005 | proposed |
-| S-04 | show-duplicate-and-history-context | see possible duplicate or similar media and prior handling context while reviewing | S-03 | US-01, FR-006, FR-007 | proposed |
+| S-04 | show-duplicate-and-history-context | see possible duplicate or similar media and prior handling context while reviewing | S-03 | US-01, FR-006, FR-007 | complete |
 | S-05 | search-managed-library | search managed media by tags and available metadata | S-03 | FR-009 | proposed |
 
 ## Streams
@@ -109,7 +109,8 @@ No standalone foundation is proposed. The absent data and access-control layers 
 - **Blockers:** —
 - **Unknowns:** —
 - **Risk:** Suggestions must inform the user without replacing their final import, skip, or deletion decision.
-- **Status:** proposed
+- **Status:** complete
+- **Note:** Visual similarity is intentionally limited to supported still images. Visual video similarity remains a separately framed future decoder/distribution decision; videos retain exact-history context only.
 
 ### S-05: Search the managed library
 
