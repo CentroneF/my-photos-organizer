@@ -250,10 +250,10 @@ Format 6 introduces nullable fingerprint/status fields so existing format-5 deci
 
 #### Automated
 
-- [x] 3.1 `cargo test --workspace` passes from a clean checkout with migration/restart/recovery and containment coverage.
-- [x] 3.2 `cargo tauri build` succeeds without generated artifacts added to Git.
+- [x] 3.1 `cargo test --workspace` passes from a clean checkout with migration/restart/recovery and containment coverage. — 39f4cc0
+- [x] 3.2 `cargo tauri build` succeeds without generated artifacts added to Git. — 39f4cc0
 
 #### Manual
 
-- [x] 3.3 The desktop import/skip/restart/review loop preserves originals and keeps history/preview boundaries safe.
-- [x] 3.4 Unavailable or changed candidates show recoverable feedback without false matches or automatic decisions.
+- [x] 3.3 The desktop import/skip/restart/review loop preserves originals and keeps history/preview boundaries safe. — 39f4cc0
+- [x] 3.4 Unavailable or changed candidates show recoverable feedback without false matches or automatic decisions. — 39f4cc0
