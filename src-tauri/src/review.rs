@@ -275,27 +275,50 @@ pub fn next_review_item(app: tauri::AppHandle) -> Result<ReviewItem, ReviewError
                 ))
             }
         };
-        connection.execute(
+        let visual_result = perceptual_hash(&path);
+        if stable_metadata(&path) != Ok((file_size, modified_at)) {
+            return Ok(unavailable_item(
+                candidate_id,
+                relative_path,
+                filename,
+                media_type,
+                date,
+                origin,
+                tags,
+                "This source item changed while it was being compared. Refresh the review before deciding; no fingerprint was saved.".into(),
+            ));
+        }
+        if connection.execute(
             "UPDATE review_candidates SET content_fingerprint_algorithm = ?1, content_fingerprint_value = ?2 WHERE id = ?3",
             params![CONTENT_FINGERPRINT_ALGORITHM, fingerprint, candidate_id],
-        ).map_err(database_error)?;
-        let exact_matches =
-            exact_matches(connection, &app, library_path, candidate_id, &fingerprint)?;
-        let (similar_matches, visual_comparison_message) = match perceptual_hash(&path) {
+        ).is_err() {
+            return Ok(unavailable_item(candidate_id, relative_path, filename, media_type, date, origin, tags, "Comparison results could not be saved. Refresh the review and try again; no decision was made.".into()));
+        }
+        let exact_matches = match exact_matches(connection, &app, library_path, candidate_id, &fingerprint) {
+            Ok(matches) => matches,
+            Err(_) => return Ok(unavailable_item(candidate_id, relative_path, filename, media_type, date, origin, tags, "Comparison history is temporarily unavailable. Refresh the review and try again; no decision was made.".into())),
+        };
+        let (similar_matches, visual_comparison_message) = match visual_result {
             Ok(hash) => {
-                connection.execute("UPDATE review_candidates SET perceptual_hash_algorithm = ?1, perceptual_hash_value = ?2, visual_comparison_state = 'available' WHERE id = ?3", params![PERCEPTUAL_HASH_ALGORITHM, hash as i64, candidate_id]).map_err(database_error)?;
-                (
-                    similar_matches(connection, &app, library_path, candidate_id, hash)?,
-                    None,
-                )
+                if connection.execute("UPDATE review_candidates SET perceptual_hash_algorithm = ?1, perceptual_hash_value = ?2, visual_comparison_state = 'available' WHERE id = ?3", params![PERCEPTUAL_HASH_ALGORITHM, hash as i64, candidate_id]).is_err() {
+                    return Ok(unavailable_item(candidate_id, relative_path, filename, media_type, date, origin, tags, "Comparison results could not be saved. Refresh the review and try again; no decision was made.".into()));
+                }
+                let matches = match similar_matches(connection, &app, library_path, candidate_id, hash) {
+                    Ok(matches) => matches,
+                    Err(_) => return Ok(unavailable_item(candidate_id, relative_path, filename, media_type, date, origin, tags, "Comparison history is temporarily unavailable. Refresh the review and try again; no decision was made.".into())),
+                };
+                (matches, None)
             }
             Err(message) => {
-                connection
+                if connection
                     .execute(
                         "UPDATE review_candidates SET visual_comparison_state = ?1 WHERE id = ?2",
                         params![message.0, candidate_id],
                     )
-                    .map_err(database_error)?;
+                    .is_err()
+                {
+                    return Ok(unavailable_item(candidate_id, relative_path, filename, media_type, date, origin, tags, "Comparison results could not be saved. Refresh the review and try again; no decision was made.".into()));
+                }
                 (vec![], Some(message.1))
             }
         };
@@ -497,6 +520,15 @@ fn fingerprint_file(
     expected_size: i64,
     expected_modified_at: i64,
 ) -> Result<Vec<u8>, String> {
+    fingerprint_file_with_after_read(path, expected_size, expected_modified_at, || {})
+}
+
+fn fingerprint_file_with_after_read(
+    path: &Path,
+    expected_size: i64,
+    expected_modified_at: i64,
+    after_read: impl FnOnce(),
+) -> Result<Vec<u8>, String> {
     let before = stable_metadata(path)?;
     if before != (expected_size, expected_modified_at) {
         return Err("This source item changed since discovery. Refresh the review before deciding; no fingerprint was saved.".into());
@@ -515,6 +547,7 @@ fn fingerprint_file(
         }
         hasher.update(&buffer[..count]);
     }
+    after_read();
     if stable_metadata(path)? != before {
         return Err("This source item changed while it was being checked. Refresh the review before deciding; no fingerprint was saved.".into());
     }
@@ -1141,6 +1174,26 @@ mod tests {
             fingerprint_file(&different, different_metadata.0, different_metadata.1).unwrap()
         );
         assert_eq!(fs::read(&first).unwrap(), b"same bytes");
+    }
+
+    #[test]
+    fn changed_during_hash_returns_recoverable_feedback_without_a_digest() {
+        let _session_guard = library::test_session_guard();
+        let directory = tempdir().unwrap();
+        let source = directory.path().join("changing.jpg");
+        fs::write(&source, b"first source bytes").unwrap();
+        let (size, modified_at) = stable_metadata(&source).unwrap();
+
+        let error = fingerprint_file_with_after_read(&source, size, modified_at, || {
+            fs::write(&source, b"replacement source bytes with a new size").unwrap();
+        })
+        .unwrap_err();
+
+        assert!(error.contains("changed while it was being checked"));
+        assert_eq!(
+            fs::read(&source).unwrap(),
+            b"replacement source bytes with a new size"
+        );
     }
 
     #[test]

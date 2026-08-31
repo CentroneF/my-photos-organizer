@@ -237,23 +237,23 @@ Format 6 introduces nullable fingerprint/status fields so existing format-5 deci
 
 #### Automated
 
-- [x] 2.1 `cargo test --workspace` passes with supported-format hashing, fixture calibration, safety states, and imported-only similarity coverage.
-- [x] 2.2 `cargo check --workspace` succeeds with pinned dependencies and synchronized DTOs.
-- [x] 2.3 UI tests prove bounded advisory context, unavailable state, responsiveness, and retained actions.
+- [x] 2.1 `cargo test --workspace` passes with supported-format hashing, fixture calibration, safety states, and imported-only similarity coverage. — 1195759
+- [x] 2.2 `cargo check --workspace` succeeds with pinned dependencies and synchronized DTOs. — 1195759
+- [x] 2.3 UI tests prove bounded advisory context, unavailable state, responsiveness, and retained actions. — 1195759
 
 #### Manual
 
-- [x] 2.4 Similar supported images show compact managed comparisons; unrelated images do not.
-- [x] 2.5 HEIC/video unavailable states are honest and the narrow review layout retains both actions.
+- [x] 2.4 Similar supported images show compact managed comparisons; unrelated images do not. — 1195759
+- [x] 2.5 HEIC/video unavailable states are honest and the narrow review layout retains both actions. — 1195759
 
 ### Phase 3: Recovery, migration, and safety hardening
 
 #### Automated
 
-- [ ] 3.1 `cargo test --workspace` passes from a clean checkout with migration/restart/recovery and containment coverage.
-- [ ] 3.2 `cargo tauri build` succeeds without generated artifacts added to Git.
+- [x] 3.1 `cargo test --workspace` passes from a clean checkout with migration/restart/recovery and containment coverage.
+- [x] 3.2 `cargo tauri build` succeeds without generated artifacts added to Git.
 
 #### Manual
 
-- [ ] 3.3 The desktop import/skip/restart/review loop preserves originals and keeps history/preview boundaries safe.
-- [ ] 3.4 Unavailable or changed candidates show recoverable feedback without false matches or automatic decisions.
+- [x] 3.3 The desktop import/skip/restart/review loop preserves originals and keeps history/preview boundaries safe.
+- [x] 3.4 Unavailable or changed candidates show recoverable feedback without false matches or automatic decisions.
