@@ -20,7 +20,7 @@ const MARKER_FILE: &str = "library.json";
 const DATABASE_FILE: &str = "catalogue.db";
 const LIBRARY_POINTER_FILE: &str = "selected-library.json";
 const MARKER_FORMAT_VERSION: u32 = 1;
-const CATALOGUE_FORMAT_VERSION: u32 = 8;
+const CATALOGUE_FORMAT_VERSION: u32 = 9;
 const KEY_BYTES: usize = 32;
 const SALT_BYTES: usize = 16;
 const NONCE_BYTES: usize = 12;
@@ -741,6 +741,8 @@ fn initialize_catalogue(
         .map_err(|error| SetupLibraryError::new("initialization_failed", format!("Could not initialize catalogue schema: {error}")))?;
     connection.execute_batch("ALTER TABLE review_candidates ADD COLUMN perceptual_hash_threshold INTEGER NULL; UPDATE schema_migrations SET version = 8; UPDATE library_identity SET format_version = 8;")
         .map_err(|error| SetupLibraryError::new("initialization_failed", format!("Could not initialize catalogue schema: {error}")))?;
+    connection.execute_batch("ALTER TABLE item_decisions ADD COLUMN gps_json TEXT NULL; UPDATE schema_migrations SET version = 9; UPDATE library_identity SET format_version = 9;")
+        .map_err(|error| SetupLibraryError::new("initialization_failed", format!("Could not initialize catalogue schema: {error}")))?;
     Ok(())
 }
 
@@ -955,6 +957,30 @@ fn validate_catalogue(
             transaction
                 .execute_batch("ALTER TABLE review_candidates ADD COLUMN perceptual_hash_threshold INTEGER NULL;")
                 .map_err(|_| SetupLibraryError::new("library_migration_failed", "Could not migrate the protected library catalogue."))?;
+        }
+        if version < 9 {
+            let gps_column_exists: i64 = transaction
+                .query_row(
+                    "SELECT count(*) FROM pragma_table_info('item_decisions') WHERE name = 'gps_json'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|_| {
+                    SetupLibraryError::new(
+                        "library_migration_failed",
+                        "Could not migrate the protected library catalogue.",
+                    )
+                })?;
+            if gps_column_exists == 0 {
+                transaction
+                    .execute_batch("ALTER TABLE item_decisions ADD COLUMN gps_json TEXT NULL;")
+                    .map_err(|_| {
+                        SetupLibraryError::new(
+                            "library_migration_failed",
+                            "Could not migrate the protected library catalogue.",
+                        )
+                    })?;
+            }
         }
         transaction
             .execute(

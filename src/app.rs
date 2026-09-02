@@ -98,6 +98,7 @@ struct ReviewItem {
     media_type: Option<String>,
     effective_import_date: Option<String>,
     date_origin: Option<String>,
+    metadata: ReviewMetadata,
     tags: Vec<String>,
     preview_url: Option<String>,
     exact_matches: Vec<ExactMatch>,
@@ -106,6 +107,28 @@ struct ReviewItem {
     imported_count: u64,
     skipped_count: u64,
     message: String,
+}
+
+#[derive(Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewMetadata {
+    file_size_bytes: Option<u64>,
+    created_at: Option<String>,
+    modified_at: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+    captured_at: Option<String>,
+    camera: Option<String>,
+    orientation: Option<String>,
+    #[serde(default)]
+    gps: Option<GpsCoordinates>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GpsCoordinates {
+    latitude: f64,
+    longitude: f64,
 }
 
 #[derive(Clone, Deserialize)]
@@ -285,6 +308,12 @@ struct TagSuggestionResult {
     tags: Vec<String>,
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecentTagsResult {
+    tags: Vec<String>,
+}
+
 #[derive(Serialize)]
 struct TagSuggestionRequest<'a> {
     prefix: &'a str,
@@ -299,6 +328,34 @@ fn command_error(value: JsValue, fallback: &str) -> String {
     serde_wasm_bindgen::from_value::<CommandError>(value)
         .map(|error| error.message)
         .unwrap_or_else(|_| fallback.to_owned())
+}
+
+fn metadata_value(value: Option<String>) -> String {
+    value.unwrap_or_else(|| "Not available".into())
+}
+
+fn metadata_size(value: Option<u64>) -> String {
+    value
+        .map(|bytes| format!("{bytes} bytes"))
+        .unwrap_or_else(|| "Not available".into())
+}
+
+fn metadata_dimensions(width: Option<u32>, height: Option<u32>) -> String {
+    match (width, height) {
+        (Some(width), Some(height)) => format!("{width} × {height}"),
+        _ => "Not available".into(),
+    }
+}
+
+fn metadata_gps(value: Option<GpsCoordinates>) -> String {
+    value
+        .map(|coordinates| {
+            format!(
+                "{:.6}°, {:.6}°",
+                coordinates.latitude, coordinates.longitude
+            )
+        })
+        .unwrap_or_else(|| "Not available".into())
 }
 
 fn video_target(event: &MediaEvent) -> Option<web_sys::HtmlVideoElement> {
@@ -387,6 +444,7 @@ pub fn App() -> Element {
         media_type: None,
         effective_import_date: None,
         date_origin: None,
+        metadata: ReviewMetadata::default(),
         tags: vec![],
         preview_url: None,
         exact_matches: vec![],
@@ -396,7 +454,9 @@ pub fn App() -> Element {
         skipped_count: 0,
         message: String::new(),
     });
-    let mut review_tags = use_signal(String::new);
+    let mut review_selected_tags = use_signal(Vec::<String>::new);
+    let mut review_tag_draft = use_signal(String::new);
+    let mut recent_review_tags = use_signal(Vec::<String>::new);
     let mut import_date = use_signal(String::new);
     let mut busy = use_signal(|| false);
     let mut recovery_question = use_signal(String::new);
@@ -532,6 +592,23 @@ pub fn App() -> Element {
                     }
                 },
                 Err(_) => error.set("Could not prepare tag suggestions.".into()),
+            }
+        });
+    });
+
+    use_effect(move || {
+        if step() != "review" {
+            return;
+        }
+        spawn(async move {
+            match invoke("recent_library_tags", JsValue::NULL).await {
+                Ok(value) => match serde_wasm_bindgen::from_value::<RecentTagsResult>(value) {
+                    Ok(result) => recent_review_tags.set(result.tags),
+                    Err(_) => {
+                        error.set("Recent review tags returned an unexpected response.".into())
+                    }
+                },
+                Err(value) => error.set(command_error(value, "Could not load recent review tags.")),
             }
         });
     });
@@ -679,7 +756,8 @@ pub fn App() -> Element {
                     match invoke("next_review_item", JsValue::NULL).await {
                         Ok(value) => match serde_wasm_bindgen::from_value::<ReviewItem>(value) {
                             Ok(item) => {
-                                review_tags.set(item.tags.join(", "));
+                                review_selected_tags.set(item.tags.clone());
+                                review_tag_draft.set(String::new());
                                 import_date
                                     .set(item.effective_import_date.clone().unwrap_or_default());
                                 review_item.set(item);
@@ -709,7 +787,7 @@ pub fn App() -> Element {
         };
         error.set(String::new());
         busy.set(true);
-        let tags = review_tags().split(',').map(str::to_owned).collect();
+        let tags = review_selected_tags();
         let result = serde_wasm_bindgen::to_value(&ReviewInvokeArgs {
             request: DecideRequest { candidate_id, tags },
         })
@@ -724,7 +802,8 @@ pub fn App() -> Element {
             Ok(_) => match invoke("next_review_item", JsValue::NULL).await {
                 Ok(value) => match serde_wasm_bindgen::from_value::<ReviewItem>(value) {
                     Ok(item) => {
-                        review_tags.set(item.tags.join(", "));
+                        review_selected_tags.set(item.tags.clone());
+                        review_tag_draft.set(String::new());
                         import_date.set(item.effective_import_date.clone().unwrap_or_default());
                         review_item.set(item);
                     }
@@ -747,7 +826,7 @@ pub fn App() -> Element {
         };
         error.set(String::new());
         busy.set(true);
-        let tags = review_tags().split(',').map(str::to_owned).collect();
+        let tags = review_selected_tags();
         let date = import_date();
         let result = serde_wasm_bindgen::to_value(&ReviewInvokeArgs {
             request: ImportRequest {
@@ -767,7 +846,8 @@ pub fn App() -> Element {
             Ok(_) => match invoke("next_review_item", JsValue::NULL).await {
                 Ok(value) => match serde_wasm_bindgen::from_value::<ReviewItem>(value) {
                     Ok(item) => {
-                        review_tags.set(item.tags.join(", "));
+                        review_selected_tags.set(item.tags.clone());
+                        review_tag_draft.set(String::new());
                         import_date.set(item.effective_import_date.clone().unwrap_or_default());
                         review_item.set(item);
                     }
@@ -845,6 +925,7 @@ pub fn App() -> Element {
                     media_type: None,
                     effective_import_date: None,
                     date_origin: None,
+                    metadata: ReviewMetadata::default(),
                     tags: vec![],
                     preview_url: None,
                     exact_matches: vec![],
@@ -1213,7 +1294,84 @@ pub fn App() -> Element {
                                 }
                                 div { class: "review-details",
                                     div { class: "review-context", strong { "{review_item().filename.clone().unwrap_or_default()}" } small { "{review_item().relative_path.clone().unwrap_or_default()}" } }
-                                    label { class: "review-field", "Tags (comma-separated)" input { value: "{review_tags}", oninput: move |event| review_tags.set(event.value()), placeholder: "Family, summer" } }
+                                    div { class: "review-metadata", "aria-label": "Media metadata",
+                                        strong { "Media details" }
+                                        dl {
+                                            div { dt { "Type" } dd { "{metadata_value(review_item().media_type.clone())}" } }
+                                            div { dt { "Size" } dd { "{metadata_size(review_item().metadata.file_size_bytes)}" } }
+                                            div { dt { "Dimensions" } dd { "{metadata_dimensions(review_item().metadata.width, review_item().metadata.height)}" } }
+                                            div { dt { "Created" } dd { "{metadata_value(review_item().metadata.created_at.clone())}" } }
+                                            div { dt { "Modified" } dd { "{metadata_value(review_item().metadata.modified_at.clone())}" } }
+                                            div { dt { "Captured" } dd { "{metadata_value(review_item().metadata.captured_at.clone())}" } }
+                                            div { dt { "Camera" } dd { "{metadata_value(review_item().metadata.camera.clone())}" } }
+                                            div { dt { "Orientation" } dd { "{metadata_value(review_item().metadata.orientation.clone())}" } }
+                                            div { dt { "GPS location" } dd { "{metadata_gps(review_item().metadata.gps.clone())}" } }
+                                        }
+                                    }
+                                    div { class: "review-field",
+                                        span { "Tags" }
+                                        div { class: "review-tag-editor", "aria-label": "Selected tags",
+                                            for tag in review_selected_tags() {
+                                                div { class: "review-tag-chip",
+                                                    span { "{tag}" }
+                                                    button {
+                                                        r#type: "button",
+                                                        "aria-label": "Remove {tag}",
+                                                        onclick: move |_| {
+                                                            let mut tags = review_selected_tags();
+                                                            tags.retain(|selected| selected != &tag);
+                                                            review_selected_tags.set(tags);
+                                                        },
+                                                        "×"
+                                                    }
+                                                }
+                                            }
+                                            input {
+                                                value: "{review_tag_draft}",
+                                                placeholder: "Type a tag and press Space",
+                                                oninput: move |event| {
+                                                    let value = event.value();
+                                                    let commits = value.split_whitespace().collect::<Vec<_>>();
+                                                    let ends_with_space = value.chars().last().is_some_and(char::is_whitespace);
+                                                    let draft = if ends_with_space { String::new() } else { commits.last().copied().unwrap_or_default().to_owned() };
+                                                    let commit_count = commits.len().saturating_sub((!ends_with_space) as usize);
+                                                    if commit_count > 0 {
+                                                        let mut tags = review_selected_tags();
+                                                        for tag in commits.into_iter().take(commit_count) {
+                                                            let tag = tag.to_lowercase();
+                                                            if !tag.is_empty() && !tags.contains(&tag) {
+                                                                tags.push(tag);
+                                                            }
+                                                        }
+                                                        review_selected_tags.set(tags);
+                                                    }
+                                                    review_tag_draft.set(draft);
+                                                }
+                                            }
+                                        }
+                                        if !recent_review_tags().is_empty() {
+                                            div { class: "recent-review-tags", "aria-label": "Recent imported tags",
+                                                small { "Recent tags" }
+                                                for tag in recent_review_tags() {
+                                                    button {
+                                                        class: "tag-chip",
+                                                        r#type: "button",
+                                                        "aria-pressed": "{review_selected_tags().contains(&tag)}",
+                                                        onclick: move |_| {
+                                                            let mut tags = review_selected_tags();
+                                                            if tags.contains(&tag) {
+                                                                tags.retain(|selected| selected != &tag);
+                                                            } else {
+                                                                tags.push(tag.clone());
+                                                            }
+                                                            review_selected_tags.set(tags);
+                                                        },
+                                                        "{tag}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                     label { class: "review-field", "Import date" input { r#type: "date", value: "{import_date}", oninput: move |event| import_date.set(event.value()) } }
                                     p { class: "privacy-note", "Date source: {review_date_origin}. {review_item().message}" }
                                     if let Some(message) = review_item().visual_comparison_message.clone() { p { class: "privacy-note", "{message}" } }
@@ -1276,10 +1434,10 @@ mod review_layout_tests {
     const STYLES: &str = include_str!("../assets/styles.css");
 
     #[test]
-    fn review_preview_is_bounded_by_the_viewport_and_keeps_aspect_ratio() {
+    fn review_uses_the_full_window_and_keeps_preview_aspect_ratio() {
         for selector in [
             ".review-flow-panel { height: 100dvh; min-height: 0;",
-            ".review-flow-wrap { width: min(100%, 42rem); height: 100%; min-height: 0; display: flex; flex-direction: column; }",
+            ".review-flow-wrap { width: 100%; height: 100%; min-height: 0; display: flex; flex-direction: column; }",
             ".review-card { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(18rem, 1fr);",
             ".review-media-panel { min-width: 0; min-height: 0; display: flex;",
             ".review-details { min-width: 0; display: flex; flex-direction: column; gap: 1rem;",
@@ -1287,6 +1445,39 @@ mod review_layout_tests {
             "object-fit: contain;",
         ] {
             assert!(STYLES.contains(selector), "missing review layout rule: {selector}");
+        }
+    }
+
+    #[test]
+    fn review_exposes_metadata_and_space_delimited_tag_chips() {
+        let source = include_str!("app.rs");
+        for hook in [
+            "ReviewMetadata",
+            "Media details",
+            "GPS location",
+            "metadata_gps",
+            "Not available",
+            "review_selected_tags",
+            "review_tag_draft",
+            "Type a tag and press Space",
+            "Remove {tag}",
+            "recent_library_tags",
+            "aria-pressed",
+        ] {
+            assert!(
+                source.contains(hook),
+                "missing review metadata/tag hook: {hook}"
+            );
+        }
+        for selector in [
+            ".review-metadata { display: grid;",
+            ".review-tag-editor { display: flex;",
+            ".recent-review-tags { display: flex;",
+        ] {
+            assert!(
+                STYLES.contains(selector),
+                "missing review metadata/tag style: {selector}"
+            );
         }
     }
 

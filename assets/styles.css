@@ -27,7 +27,7 @@ button:disabled { cursor: wait; opacity: .65; }
 .flow-panel { min-height: 100vh; display: grid; place-items: center; padding: clamp(2rem, 7vw, 7rem); }
 .flow-wrap { width: min(100%, 42rem); }
 .review-flow-panel { height: 100dvh; min-height: 0; padding: clamp(1rem, 2vw, 2rem); }
-.review-flow-wrap { width: min(100%, 42rem); height: 100%; min-height: 0; display: flex; flex-direction: column; }
+.review-flow-wrap { width: 100%; height: 100%; min-height: 0; display: flex; flex-direction: column; }
 .search-flow-panel { min-height: 100dvh; padding: 0; display: block; }
 .search-flow-wrap { width: 100%; min-height: 100dvh; }
 .review-flow-wrap > .lede { margin: .65rem 0 1rem; line-height: 1.45; }
@@ -73,10 +73,22 @@ button:disabled { cursor: wait; opacity: .65; }
 .review-context { display: grid; gap: .25rem; }
 .review-context strong { overflow-wrap: anywhere; font-size: 1rem; }
 .review-context small { overflow-wrap: anywhere; color: #777a85; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .74rem; }
+.review-metadata { display: grid; gap: .45rem; padding: .7rem; border: 1px solid #e0dbd0; border-radius: .7rem; background: #f8f6f1; }
+.review-metadata > strong { color: #3f4559; font-size: .82rem; }
+.review-metadata dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .4rem .7rem; margin: 0; }
+.review-metadata dl div { min-width: 0; }
+.review-metadata dt { color: #777a85; font-size: .66rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.review-metadata dd { margin: .1rem 0 0; overflow-wrap: anywhere; color: #3f4559; font-size: .75rem; }
 .media-preview { display: block; width: 100%; max-width: 100%; height: 100%; max-height: 100%; min-height: 0; border-radius: .8rem; object-fit: contain; }
 .review-field { display: grid; gap: .45rem; color: #3f4559; font-size: .78rem; font-weight: 800; }
 .review-field input { width: 100%; padding: .82rem .9rem; border: 1px solid #d4d0c8; border-radius: .7rem; outline: none; color: #17213b; background: #fffdf8; }
 .review-field input:focus { border-color: #6a64ad; box-shadow: 0 0 0 3px rgba(106, 100, 173, .13); }
+.review-tag-editor { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; min-height: 3rem; padding: .45rem; border: 1px solid #d4d0c8; border-radius: .7rem; background: #fffdf8; }
+.review-tag-editor input { flex: 1 1 10rem; min-width: 8rem; padding: .45rem; border: 0; box-shadow: none; }
+.review-tag-editor input:focus { box-shadow: none; }
+.review-tag-chip { display: inline-flex; align-items: center; gap: .3rem; padding: .28rem .35rem .28rem .55rem; border-radius: .45rem; color: #4d488e; background: #e7e4f5; font-size: .78rem; font-weight: 700; }
+.review-tag-chip button { border: 0; padding: 0 .15rem; color: inherit; background: transparent; font-weight: 900; line-height: 1; }
+.recent-review-tags { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; }.recent-review-tags small { width: 100%; color: #777a85; font-size: .72rem; }.recent-review-tags .tag-chip[aria-pressed="true"] { color: #fff; background: #5b55a5; }
 .exact-history { display: grid; gap: .55rem; max-height: 12rem; overflow: auto; padding-right: .2rem; }
 .similar-history { display: grid; gap: .45rem; max-height: 12rem; overflow: auto; }.similar-history-item { display: grid; grid-template-columns: 3rem minmax(0, 1fr); gap: .4rem; align-items: center; padding: .55rem; border-radius: .65rem; background: #e7e4f5; }.similar-history-item img { grid-row: span 2; width: 3rem; height: 3rem; object-fit: cover; border-radius: .4rem; }.similar-history-item small { overflow-wrap: anywhere; font-size: .7rem; }
 .exact-history-item { display: grid; gap: .35rem; padding: .65rem; border: 1px solid #d8d3c8; border-radius: .7rem; background: #efebe1; }
@@ -109,6 +121,7 @@ button:disabled { cursor: wait; opacity: .65; }
   .review-card { grid-template-columns: 1fr; gap: .7rem; padding: .85rem; }
   .review-heading { align-items: flex-start; }
   .review-media-panel { min-height: 12rem; }
+  .review-metadata dl { grid-template-columns: 1fr; }
   .decision-actions { gap: .7rem; }
   .library-search { padding: .75rem; }.search-filters { grid-template-columns: 1fr; }
 }

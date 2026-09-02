@@ -85,6 +85,12 @@ pub struct TagSuggestionResult {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentTagsResult {
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct SearchError {
     pub code: &'static str,
     pub message: String,
@@ -228,6 +234,29 @@ pub fn suggest_library_tags(
         Ok::<_, SearchError>(results)
     })?;
     Ok(TagSuggestionResult { tags })
+}
+
+pub fn recent_library_tags() -> Result<RecentTagsResult, SearchError> {
+    let tags = library::with_catalogue(|connection, _| {
+        let mut statement = connection
+            .prepare(
+                "SELECT t.normalized_name, MAX(d.decided_at) AS last_used \
+                 FROM tags t \
+                 JOIN candidate_tags ct ON ct.tag_id = t.id \
+                 JOIN item_decisions d ON d.candidate_id = ct.candidate_id \
+                 WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL \
+                 GROUP BY t.id, t.normalized_name \
+                 ORDER BY last_used DESC, t.normalized_name ASC LIMIT 5",
+            )
+            .map_err(database_error)?;
+        let tags = statement
+            .query_map([], |row| row.get(0))
+            .map_err(database_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(database_error)?;
+        Ok::<_, SearchError>(tags)
+    })?;
+    Ok(RecentTagsResult { tags })
 }
 
 fn normalize_tags(tags: &[String]) -> Vec<String> {
@@ -399,6 +428,11 @@ mod tests {
         .unwrap()
         .tags
         .is_empty());
+        assert_eq!(
+            recent_library_tags().unwrap().tags,
+            ["family", "summer"],
+            "recent review tags are imported-only and deterministically ordered"
+        );
         library::lock_library();
     }
 }

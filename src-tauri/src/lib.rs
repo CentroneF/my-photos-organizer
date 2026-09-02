@@ -50,6 +50,11 @@ fn suggest_library_tags(
 }
 
 #[tauri::command]
+fn recent_library_tags() -> Result<search::RecentTagsResult, search::SearchError> {
+    search::recent_library_tags()
+}
+
+#[tauri::command]
 fn lock_library() {
     library::lock_library();
 }
@@ -245,6 +250,7 @@ pub fn run() {
             import_review_item,
             search_library,
             suggest_library_tags,
+            recent_library_tags,
             lock_library,
             open_library_folder,
             clean_library,

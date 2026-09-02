@@ -329,15 +329,15 @@ The catalogue format is incremented for the replacement relationship and support
 
 #### Automated
 
-- [ ] 1.1 Add Media details/GPS extraction, GPS persistence, response contract, and metadata display
+- [x] 1.1 Add Media details/GPS extraction, GPS persistence, response contract, and metadata display
 - [x] 1.2 Add recent imported-tag query and register its Tauri command
 - [x] 1.3 Implement the full-window review layout and space-delimited removable tag chips
-- [ ] 1.4 Run `cargo test --workspace` for metadata, recent-tag, and UI contract coverage
+- [x] 1.4 Run `cargo test --workspace` for metadata, recent-tag, and UI contract coverage
 - [ ] 1.5 Run `cargo tauri build`
 
 #### Manual
 
-- [ ] 1.6 Verify full-window metadata fallbacks, chip tagging, recent toggles, and responsive review actions
+- [x] 1.6 Verify full-window metadata fallbacks, chip tagging, recent toggles, and responsive review actions
 
 ### Phase 2: Compare Every Similar Imported Item
 
