@@ -2,7 +2,7 @@
 
 ## Overview
 
-Turn the review screen into a full-window decision workspace. It will show every metadata entry the local extractor can discover, persist that metadata with each imported item for future search work, support fast chip-based tagging, and let a reviewer compare every similar imported item in an accessible dialog before choosing to keep both, skip the current item, or safely substitute the old managed copy.
+Turn the review screen into a full-window decision workspace. It will show the approved Media details fields plus GPS coordinates, persist GPS coordinates with each imported item for future search work, support fast chip-based tagging, and let a reviewer compare every similar imported item in an accessible dialog before choosing to keep both, skip the current item, or safely substitute the old managed copy.
 
 ## Current State Analysis
 
@@ -12,7 +12,7 @@ Imports copy source media into the managed library and record a decision. They n
 
 ## Desired End State
 
-The reviewer sees a responsive full-window workspace with every discoverable metadata field for the current candidate, removable selected tags, and five recent imported tags. When the reviewer imports a copy, the complete normalized metadata payload is saved with that imported decision for future library-search work. Every similar imported match is available for a focused side-by-side comparison. The reviewer can keep both, skip the current candidate, or substitute a selected old managed copy; substitution transfers the normalized union of old and current tags, removes only the old managed copy after a recoverable operation succeeds, and never changes the original source file.
+The reviewer sees a responsive full-window workspace with Media details—type, size, dimensions, created, modified, captured, camera, and orientation—plus GPS coordinates when present, removable selected tags, and five recent imported tags. When the reviewer imports a copy, its GPS coordinates are saved with that imported decision for future library-search work. Every similar imported match is available for a focused side-by-side comparison. The reviewer can keep both, skip the current candidate, or substitute a selected old managed copy; substitution transfers the normalized union of old and current tags, removes only the old managed copy after a recoverable operation succeeds, and never changes the original source file.
 
 ### Key Discoveries:
 
@@ -34,7 +34,7 @@ The reviewer sees a responsive full-window workspace with every discoverable met
 
 Deliver three vertical, frontend-verifiable slices. The first improves every review decision with full-window information and tags. The second makes all existing visual-similarity results actionable through a single accessible comparison dialog. The third introduces the schema relationship and compensating file/database workflow needed for safe substitution.
 
-The metadata DTO will contain standard filesystem/header fields plus every EXIF field the local parser discovers, including GPS fields. Native code will serialize a normalized, ordered metadata payload with stable keys, labels, values, and source group; `import_review_item` persists it with the imported decision. Unsupported/corrupt formats retain every field that can be discovered and never block review, comparison, import, or skip. No metadata-search filters or indexes are added in this change.
+The metadata DTO will contain the approved filesystem/header/EXIF fields—type, size, dimensions, created, modified, captured, camera, and orientation—plus decimal GPS latitude and longitude when available. `import_review_item` persists only the GPS coordinate pair with the imported decision. Unsupported/corrupt formats retain available Media details, report GPS as unavailable, and never block review, comparison, import, or skip. No metadata-search filters or indexes are added in this change.
 
 ## Critical Implementation Details
 
@@ -48,31 +48,31 @@ Make the normal review experience use the full application window and provide al
 
 ### Changes Required:
 
-#### 1. Complete review metadata and import persistence contract
+#### 1. Review metadata and GPS import-persistence contract
 
 **File**: `src-tauri/Cargo.toml`
 
-**Intent**: Add the local metadata parser required to enumerate every discoverable EXIF field, including GPS, without granting the frontend filesystem access.
+**Intent**: Add the local metadata parser required to read the approved Media details and GPS coordinates without granting the frontend filesystem access.
 
 **Contract**: Add the selected EXIF dependency and update `Cargo.lock`. The parser remains native-only and reads source files solely through the existing safe review path.
 
 **File**: `src-tauri/src/review.rs`
 
-**Intent**: Project complete discoverable filesystem/header/EXIF metadata into the active review item and preserve the same normalized payload when the candidate is imported.
+**Intent**: Project the approved filesystem/header/EXIF details and GPS coordinates into the active review item, and preserve GPS coordinates when the candidate is imported.
 
-**Contract**: Add serializable standard fields plus an ordered metadata-entry collection containing every discovered EXIF key/value (including GPS), with a stable machine key, human label, value, and group. Metadata probes run only after source stability checks (or revalidate afterward); unavailable probes become labelled unavailable standard fields and never produce a review error. Extend `ImportRequest`/`import_review_item` to persist the normalized payload atomically with a successful imported decision; skipped candidates do not receive imported metadata.
+**Contract**: Add serializable Media details for type, size, dimensions, created, modified, captured, camera, and orientation, plus an optional decimal GPS latitude/longitude pair. Metadata probes run only after source stability checks (or revalidate afterward); unavailable probes become labelled unavailable values and never produce a review error. Extend `ImportRequest`/`import_review_item` to persist the GPS pair atomically with a successful imported decision; skipped candidates do not receive GPS data.
 
 **File**: `src-tauri/src/library.rs`
 
-**Intent**: Persist immutable imported-media metadata without forcing a schema per EXIF vendor key.
+**Intent**: Persist immutable GPS coordinates for imported media without forcing a schema per EXIF vendor key.
 
-**Contract**: Bump the encrypted catalogue format and migrate `item_decisions` with a nullable serialized metadata payload column. New imports write the payload in the same transaction as their imported decision; existing imports retain `NULL` until a future backfill decision. Do not add metadata-search indexes or alter existing search controls.
+**Contract**: Bump the encrypted catalogue format and migrate `item_decisions` with a nullable serialized GPS payload column. New imports write the payload in the same transaction as their imported decision; existing imports retain `NULL` until a future backfill decision. Do not add metadata-search indexes or alter existing search controls.
 
 **File**: `src/app.rs`
 
-**Intent**: Display the complete discoverable metadata payload for the current review item in an understandable, scrollable full-window section.
+**Intent**: Display the approved Media details and GPS coordinates for the current review item in an understandable full-window section.
 
-**Contract**: Render standard fields and grouped arbitrary metadata entries, including GPS, with stable labels/values and a clear unavailable state for standard probes. Long values and large metadata sets remain scrollable; retain existing filename/path/date information, preview fallback, Import, and Skip actions.
+**Contract**: Render Type, Size, Dimensions, Created, Modified, Captured, Camera, Orientation, and GPS coordinates with stable labels/values and clear unavailable states. Retain existing filename/path/date information, preview fallback, Import, and Skip actions.
 
 #### 2. Full-window layout and chip-based review tags
 
@@ -96,7 +96,7 @@ Make the normal review experience use the full application window and provide al
 
 **File**: `assets/styles.css`
 
-**Intent**: Expand only the review workspace to the available window and style complete grouped metadata, chips, recent toggles, and narrow-screen reflow.
+**Intent**: Expand only the review workspace to the available window and style the Media details/GPS section, chips, recent toggles, and narrow-screen reflow.
 
 **Contract**: Remove the review-only narrow width cap while leaving other flow wrappers unaffected. The review content remains scrollable and decision actions remain available at viewport-constrained heights.
 
@@ -104,9 +104,9 @@ Make the normal review experience use the full application window and provide al
 
 **File**: `src-tauri/src/review.rs`
 
-**Intent**: Prove complete metadata enumeration/persistence for supported EXIF, GPS, missing, unsupported, and malformed metadata sources.
+**Intent**: Prove approved Media details/GPS extraction and GPS persistence for supported EXIF, missing, unsupported, and malformed metadata sources.
 
-**Contract**: Tests cover basic metadata, image-header dimensions, every enumerated EXIF field including GPS, non-blocking unavailable metadata, and persistence/reopen of an imported metadata payload. Confirm the source remains unmodified.
+**Contract**: Tests cover the eight displayed Media details, decimal GPS extraction, non-blocking unavailable metadata, and persistence/reopen of imported GPS data. Confirm the source remains unmodified.
 
 **File**: `src-tauri/src/search.rs`
 
@@ -118,19 +118,19 @@ Make the normal review experience use the full application window and provide al
 
 **Intent**: Guard the new review layout/metadata/chip contracts in the project's existing source-and-CSS test style.
 
-**Contract**: Assert the full-window selector, grouped complete-metadata list, GPS metadata hook, metadata overflow behavior, space-commit path, accessible remove controls, recent-tag toggle hooks, and vector-based decision requests.
+**Contract**: Assert the full-window selector, Media details/GPS presentation, GPS unavailable state, space-commit path, accessible remove controls, recent-tag toggle hooks, and vector-based decision requests.
 
 ### Success Criteria:
 
 #### Automated Verification:
 
-- `cargo test --workspace` passes, including complete metadata/GPS enumeration and import-persistence migration/reopen, recent-tag ordering, and review UI source/CSS contract coverage.
+- `cargo test --workspace` passes, including Media details/GPS extraction and GPS-persistence migration/reopen, recent-tag ordering, and review UI source/CSS contract coverage.
 - `cargo tauri build` succeeds with the metadata dependency and recent-tags command registered.
 
 #### Manual Verification:
 
-- Review a supported GPS-tagged image and an unsupported/corrupt-metadata media file; both show a full-window review workspace, every discoverable metadata field, and labelled unavailable standard values without blocking actions.
-- Import the GPS-tagged image, reopen the protected library catalogue, and verify its complete metadata payload remains persisted for a future metadata-search feature.
+- Review a supported GPS-tagged image and an unsupported/corrupt-metadata media file; both show a full-window review workspace with all approved Media details and a labelled unavailable GPS state without blocking actions.
+- Import the GPS-tagged image, reopen the protected library catalogue, and verify its GPS coordinates remain persisted for a future metadata-search feature.
 - Enter and paste space-separated tags, remove chips with `×`, toggle recent imported tags, then Import and Skip items to verify the selected tags persist as expected.
 - Resize a review session to a narrow/tall window and verify details can scroll while Import and Skip remain reachable.
 
@@ -286,19 +286,19 @@ Add a dedicated substitute decision that replaces one selected old managed impor
 
 ### Unit Tests:
 
-- Complete discoverable metadata, including GPS, is normalized, non-blocking, and persists only with imported decisions.
+- The approved Media details and decimal GPS coordinates are non-blocking, and GPS persists only with imported decisions.
 - Recent imported tags use per-tag latest imported decision, deterministic ordering, and a five-tag cap.
 - Similar matching returns each valid non-superseded imported candidate in newest-first order.
 - Substitute validates identity/state/path invariants, preserves source bytes, normalizes tag unions, and compensates for filesystem/database failures.
 
 ### Integration Tests:
 
-- Use temporary encrypted libraries to verify complete metadata persistence/reopen, recent-tag results, all-match comparison contracts, substitute migrations, and search visibility.
+- Use temporary encrypted libraries to verify GPS persistence/reopen, recent-tag results, all-match comparison contracts, substitute migrations, and search visibility.
 - Inject filesystem/transaction seams to verify failure recovery before a real managed destination can be removed.
 
 ### Manual Testing Steps:
 
-1. Start a review with supported GPS-tagged, unsupported, and metadata-poor media; verify the full-window complete-metadata workspace and non-blocking fallback labels.
+1. Start a review with supported GPS-tagged, unsupported, and metadata-poor media; verify the full-window Media details/GPS workspace and non-blocking fallback labels.
 2. Use space-delimited tag entry, remove chips, and select recent tags before both import and skip decisions.
 3. Compare every similar imported item through the keyboard-accessible dialog; exercise close, Keep Both, and Skip behavior.
 4. Substitute a selected imported match and confirm merged tags, updated library visibility, original-source preservation, and recovery messaging for a deliberately failed cleanup.
@@ -329,7 +329,7 @@ The catalogue format is incremented for the replacement relationship and support
 
 #### Automated
 
-- [ ] 1.1 Add complete metadata extraction, import persistence, response contract, and metadata display
+- [ ] 1.1 Add Media details/GPS extraction, GPS persistence, response contract, and metadata display
 - [x] 1.2 Add recent imported-tag query and register its Tauri command
 - [x] 1.3 Implement the full-window review layout and space-delimited removable tag chips
 - [ ] 1.4 Run `cargo test --workspace` for metadata, recent-tag, and UI contract coverage
