@@ -2,7 +2,7 @@
 
 ## Overview
 
-Turn the review screen into a full-window decision workspace. It will show safe best-effort media metadata, support fast chip-based tagging, and let a reviewer compare every similar imported item in an accessible dialog before choosing to keep both, skip the current item, or safely substitute the old managed copy.
+Turn the review screen into a full-window decision workspace. It will show every metadata entry the local extractor can discover, persist that metadata with each imported item for future search work, support fast chip-based tagging, and let a reviewer compare every similar imported item in an accessible dialog before choosing to keep both, skip the current item, or safely substitute the old managed copy.
 
 ## Current State Analysis
 
@@ -12,7 +12,7 @@ Imports copy source media into the managed library and record a decision. They n
 
 ## Desired End State
 
-The reviewer sees a responsive full-window workspace with the current candidate, its available metadata, removable selected tags, and five recent imported tags. Every similar imported match is available for a focused side-by-side comparison. The reviewer can keep both, skip the current candidate, or substitute a selected old managed copy; substitution transfers the normalized union of old and current tags, removes only the old managed copy after a recoverable operation succeeds, and never changes the original source file.
+The reviewer sees a responsive full-window workspace with every discoverable metadata field for the current candidate, removable selected tags, and five recent imported tags. When the reviewer imports a copy, the complete normalized metadata payload is saved with that imported decision for future library-search work. Every similar imported match is available for a focused side-by-side comparison. The reviewer can keep both, skip the current candidate, or substitute a selected old managed copy; substitution transfers the normalized union of old and current tags, removes only the old managed copy after a recoverable operation succeeds, and never changes the original source file.
 
 ### Key Discoveries:
 
@@ -25,7 +25,7 @@ The reviewer sees a responsive full-window workspace with the current candidate,
 ## What We're NOT Doing
 
 - Moving, deleting, or otherwise changing the user's original source media.
-- Rendering arbitrary raw EXIF, GPS, or format-specific key/value metadata; metadata is a safe explicit allowlist with unavailable values labelled clearly.
+- Adding metadata-search controls in this change; the persisted metadata is the foundation for a later search slice.
 - Adding comparison for exact matches, changing similarity algorithms/thresholds, or building a duplicate-management screen outside the review flow.
 - Creating thumbnails, transcoding video, broadly relaxing asset-protocol permissions, or changing managed-library search behavior other than excluding superseded imports.
 - Supporting multi-word tag entry in the review field; per the approved interaction, each space commits one tag.
@@ -34,7 +34,7 @@ The reviewer sees a responsive full-window workspace with the current candidate,
 
 Deliver three vertical, frontend-verifiable slices. The first improves every review decision with full-window information and tags. The second makes all existing visual-similarity results actionable through a single accessible comparison dialog. The third introduces the schema relationship and compensating file/database workflow needed for safe substitution.
 
-The metadata DTO will contain an explicit best-effort set: byte size, creation/modified timestamps, image dimensions, capture date, camera, and orientation. Existing basic filesystem/image probes are reused; a narrowly scoped EXIF reader supplies optional EXIF values. Missing/unsupported/corrupt metadata never blocks review, comparison, import, or skip.
+The metadata DTO will contain standard filesystem/header fields plus every EXIF field the local parser discovers, including GPS fields. Native code will serialize a normalized, ordered metadata payload with stable keys, labels, values, and source group; `import_review_item` persists it with the imported decision. Unsupported/corrupt formats retain every field that can be discovered and never block review, comparison, import, or skip. No metadata-search filters or indexes are added in this change.
 
 ## Critical Implementation Details
 
@@ -48,25 +48,31 @@ Make the normal review experience use the full application window and provide al
 
 ### Changes Required:
 
-#### 1. Safe best-effort review metadata contract
+#### 1. Complete review metadata and import persistence contract
 
 **File**: `src-tauri/Cargo.toml`
 
-**Intent**: Add the narrowly scoped EXIF parser required for optional capture date, camera, and orientation extraction.
+**Intent**: Add the local metadata parser required to enumerate every discoverable EXIF field, including GPS, without granting the frontend filesystem access.
 
-**Contract**: Add the selected EXIF dependency and update `Cargo.lock`; no broad media metadata or GPS parsing API is exposed.
+**Contract**: Add the selected EXIF dependency and update `Cargo.lock`. The parser remains native-only and reads source files solely through the existing safe review path.
 
 **File**: `src-tauri/src/review.rs`
 
-**Intent**: Project safe basic, image-header, and EXIF metadata into each active review item without changing current candidate availability semantics.
+**Intent**: Project complete discoverable filesystem/header/EXIF metadata into the active review item and preserve the same normalized payload when the candidate is imported.
 
-**Contract**: Add a serializable `ReviewMetadata` field to every `ReviewItem` state, with nullable byte-size, created/modified timestamp, dimensions, capture timestamp, camera, and orientation fields. Metadata probes run only after source stability checks (or revalidate afterward); each unavailable probe becomes `None`, not a review error. Do not return raw EXIF/GPS fields.
+**Contract**: Add serializable standard fields plus an ordered metadata-entry collection containing every discovered EXIF key/value (including GPS), with a stable machine key, human label, value, and group. Metadata probes run only after source stability checks (or revalidate afterward); unavailable probes become labelled unavailable standard fields and never produce a review error. Extend `ImportRequest`/`import_review_item` to persist the normalized payload atomically with a successful imported decision; skipped candidates do not receive imported metadata.
+
+**File**: `src-tauri/src/library.rs`
+
+**Intent**: Persist immutable imported-media metadata without forcing a schema per EXIF vendor key.
+
+**Contract**: Bump the encrypted catalogue format and migrate `item_decisions` with a nullable serialized metadata payload column. New imports write the payload in the same transaction as their imported decision; existing imports retain `NULL` until a future backfill decision. Do not add metadata-search indexes or alter existing search controls.
 
 **File**: `src/app.rs`
 
-**Intent**: Deserialize and display a labelled metadata section for the current review item.
+**Intent**: Display the complete discoverable metadata payload for the current review item in an understandable, scrollable full-window section.
 
-**Contract**: Render each approved field with a consistent unavailable value and retain the existing review filename/path/date information, preview fallback, Import, and Skip actions.
+**Contract**: Render standard fields and grouped arbitrary metadata entries, including GPS, with stable labels/values and a clear unavailable state for standard probes. Long values and large metadata sets remain scrollable; retain existing filename/path/date information, preview fallback, Import, and Skip actions.
 
 #### 2. Full-window layout and chip-based review tags
 
@@ -90,7 +96,7 @@ Make the normal review experience use the full application window and provide al
 
 **File**: `assets/styles.css`
 
-**Intent**: Expand only the review workspace to the available window and style metadata, chips, recent toggles, and narrow-screen reflow.
+**Intent**: Expand only the review workspace to the available window and style complete grouped metadata, chips, recent toggles, and narrow-screen reflow.
 
 **Contract**: Remove the review-only narrow width cap while leaving other flow wrappers unaffected. The review content remains scrollable and decision actions remain available at viewport-constrained heights.
 
@@ -98,9 +104,9 @@ Make the normal review experience use the full application window and provide al
 
 **File**: `src-tauri/src/review.rs`
 
-**Intent**: Prove safe metadata behavior for complete, missing, unsupported, and malformed metadata sources.
+**Intent**: Prove complete metadata enumeration/persistence for supported EXIF, GPS, missing, unsupported, and malformed metadata sources.
 
-**Contract**: Tests cover basic metadata, image header dimensions where supported, optional EXIF fields, and non-blocking unavailable metadata. Confirm the source remains unmodified.
+**Contract**: Tests cover basic metadata, image-header dimensions, every enumerated EXIF field including GPS, non-blocking unavailable metadata, and persistence/reopen of an imported metadata payload. Confirm the source remains unmodified.
 
 **File**: `src-tauri/src/search.rs`
 
@@ -112,18 +118,19 @@ Make the normal review experience use the full application window and provide al
 
 **Intent**: Guard the new review layout/metadata/chip contracts in the project's existing source-and-CSS test style.
 
-**Contract**: Assert the full-window selector, metadata fallback labels, space-commit path, accessible remove controls, recent-tag toggle hooks, and vector-based decision requests.
+**Contract**: Assert the full-window selector, grouped complete-metadata list, GPS metadata hook, metadata overflow behavior, space-commit path, accessible remove controls, recent-tag toggle hooks, and vector-based decision requests.
 
 ### Success Criteria:
 
 #### Automated Verification:
 
-- `cargo test --workspace` passes, including metadata fallback, recent-tag ordering, and review UI source/CSS contract coverage.
+- `cargo test --workspace` passes, including complete metadata/GPS enumeration and import-persistence migration/reopen, recent-tag ordering, and review UI source/CSS contract coverage.
 - `cargo tauri build` succeeds with the metadata dependency and recent-tags command registered.
 
 #### Manual Verification:
 
-- Review a supported image and an unsupported/corrupt-metadata media file; both show a full-window review workspace, available metadata, and labelled unavailable values without blocking actions.
+- Review a supported GPS-tagged image and an unsupported/corrupt-metadata media file; both show a full-window review workspace, every discoverable metadata field, and labelled unavailable standard values without blocking actions.
+- Import the GPS-tagged image, reopen the protected library catalogue, and verify its complete metadata payload remains persisted for a future metadata-search feature.
 - Enter and paste space-separated tags, remove chips with `×`, toggle recent imported tags, then Import and Skip items to verify the selected tags persist as expected.
 - Resize a review session to a narrow/tall window and verify details can scroll while Import and Skip remain reachable.
 
@@ -279,19 +286,19 @@ Add a dedicated substitute decision that replaces one selected old managed impor
 
 ### Unit Tests:
 
-- Best-effort metadata returns independent nullable values and never blocks a valid review candidate.
+- Complete discoverable metadata, including GPS, is normalized, non-blocking, and persists only with imported decisions.
 - Recent imported tags use per-tag latest imported decision, deterministic ordering, and a five-tag cap.
 - Similar matching returns each valid non-superseded imported candidate in newest-first order.
 - Substitute validates identity/state/path invariants, preserves source bytes, normalizes tag unions, and compensates for filesystem/database failures.
 
 ### Integration Tests:
 
-- Use temporary encrypted libraries to verify metadata/recent-tag results, all-match comparison contracts, substitute migrations, and reopen/search visibility.
+- Use temporary encrypted libraries to verify complete metadata persistence/reopen, recent-tag results, all-match comparison contracts, substitute migrations, and search visibility.
 - Inject filesystem/transaction seams to verify failure recovery before a real managed destination can be removed.
 
 ### Manual Testing Steps:
 
-1. Start a review with supported, unsupported, and metadata-poor media; verify the full-window information workspace and non-blocking fallback labels.
+1. Start a review with supported GPS-tagged, unsupported, and metadata-poor media; verify the full-window complete-metadata workspace and non-blocking fallback labels.
 2. Use space-delimited tag entry, remove chips, and select recent tags before both import and skip decisions.
 3. Compare every similar imported item through the keyboard-accessible dialog; exercise close, Keep Both, and Skip behavior.
 4. Substitute a selected imported match and confirm merged tags, updated library visibility, original-source preservation, and recovery messaging for a deliberately failed cleanup.
@@ -322,9 +329,9 @@ The catalogue format is incremented for the replacement relationship and support
 
 #### Automated
 
-- [ ] 1.1 Add safe best-effort metadata extraction, response contract, and metadata display
-- [ ] 1.2 Add recent imported-tag query and register its Tauri command
-- [ ] 1.3 Implement the full-window review layout and space-delimited removable tag chips
+- [ ] 1.1 Add complete metadata extraction, import persistence, response contract, and metadata display
+- [x] 1.2 Add recent imported-tag query and register its Tauri command
+- [x] 1.3 Implement the full-window review layout and space-delimited removable tag chips
 - [ ] 1.4 Run `cargo test --workspace` for metadata, recent-tag, and UI contract coverage
 - [ ] 1.5 Run `cargo tauri build`
 
