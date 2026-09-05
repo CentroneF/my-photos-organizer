@@ -1,0 +1,12 @@
+---
+change_id: similarity-treshold-fix
+title: Similarity treshold fix
+status: planned
+created: 2026-09-05
+updated: 2026-09-05
+archived_at: null
+---
+
+## Notes
+
+<!-- Free-form notes for this change: links, ad-hoc context, decisions that don't belong in research/frame/plan. -->
