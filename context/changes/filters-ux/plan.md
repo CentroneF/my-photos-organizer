@@ -2,7 +2,7 @@
 
 ## Overview
 
-Rework the Library Search controls into a more focused workspace: filters live in an independently expandable panel on the right, active constraints are visible and removable above the media grid, and library actions move into one top-right settings menu. Extend the existing imported-only encrypted-catalogue search contract only where the requested behaviors require it: two simultaneous date ranges, checkbox media-type selection, and frequency-ranked tag discovery.
+Rework the Library Search controls into a more focused workspace: filters live in an independently expandable panel on the left, active constraints are visible and removable above the media grid, and library actions move into one top-right settings menu. Extend the existing imported-only encrypted-catalogue search contract only where the requested behaviors require it: two simultaneous date ranges, checkbox media-type selection, and frequency-ranked tag discovery.
 
 ## Current State Analysis
 
@@ -12,7 +12,7 @@ Library Search is the `home` branch of the single Dioxus application component. 
 
 ## Desired End State
 
-An unlocked library shows a clean media workspace with a top-right settings icon menu and a right-side filter panel. All filter sections can remain open. Imported and Captured ranges combine as AND predicates; Images and Videos start selected and can be toggled individually; an empty type selection shows no results. Each active constraint has a removable applied-filter chip above the grid, with a Clear all action.
+An unlocked library shows a clean media workspace with a top-right settings icon menu and a left-side filter panel. All filter sections can remain open. Imported and Captured ranges combine as AND predicates; Images and Videos start selected and can be toggled individually; an empty type selection shows no results. Each active constraint has a removable applied-filter chip above the grid, with a Clear all action.
 
 The Tags section initially shows the ten most-used tags from active imported media. A tag search field performs literal, case-normalized substring matching, returns at most ten frequency-ranked tags, and each tag toggles into the same AND-based search state. All behavior remains local, imported-only, and immediately updates the grid.
 
@@ -47,7 +47,7 @@ For tag substring matching, bind `format!("%{}%", escape_like(&normalize_tag(que
 
 ### Overview
 
-Move the current Library Search controls into a right-side multi-expand panel and make current constraints visible and removable above the grid, while preserving the existing native search contract and all library action routes.
+Move the current Library Search controls into a left-side multi-expand panel and make current constraints visible and removable above the grid, while preserving the existing native search contract and all library action routes.
 
 ### Changes Required:
 
@@ -55,7 +55,7 @@ Move the current Library Search controls into a right-side multi-expand panel an
 
 **File**: `src/app.rs`
 
-**Intent**: Replace the current four-button header and top filter form in the `home` branch with a title plus accessible top-right settings-menu trigger, a menu containing Import media, Library settings, Close library, and Danger zone, a right-side filter panel, and an applied-filter bar above the results.
+**Intent**: Replace the current four-button header and top filter form in the `home` branch with a title plus accessible top-right settings-menu trigger, a menu containing Import media, Library settings, Close library, and Danger zone, a left-side filter panel, and an applied-filter bar above the results.
 
 **Contract**: The menu actions use the current `step` transitions and `close_library` handler; no new native command is introduced. Each filter section has its own expanded signal and may stay open with other sections. The moved date-mode/range, media select, and current tag controls preserve their existing request semantics in this phase. Applied chips remove only their represented state; Clear all restores the existing default state and triggers the current reactive search.
 
@@ -63,7 +63,7 @@ Move the current Library Search controls into a right-side multi-expand panel an
 
 **File**: `assets/styles.css`
 
-**Intent**: Replace the top-form layout with a grid/flex workspace that places the result column beside the right filter sidebar on wide screens and stacks it cleanly on narrow screens; add menu, disclosure, filter-chip, and focus-visible styles.
+**Intent**: Replace the top-form layout with a grid/flex workspace that places the result column beside the left filter sidebar on wide screens and stacks it cleanly on narrow screens; add menu, disclosure, filter-chip, and focus-visible styles.
 
 **Contract**: The sidebar sections are keyboard-operable and visually indicate expanded state. The action menu remains associated with its trigger, closes without blocking navigation, and all existing empty-state, grid, and preview fallback layouts remain usable at the existing 820px and 520px breakpoints.
 
@@ -84,7 +84,7 @@ Move the current Library Search controls into a right-side multi-expand panel an
 
 #### Manual Verification:
 
-- Unlock a populated library and verify filters appear on the right, multiple sections remain expanded, and the existing date/type/tag controls still update the grid.
+- Unlock a populated library and verify filters appear on the left, multiple sections remain expanded, and the existing date/type/tag controls still update the grid.
 - Open the top-right settings menu and verify every existing action reaches the same Import media, Library settings, Close library, and Danger zone flows.
 - Apply and individually remove existing filters, use Clear all, and confirm neither `LIBRARY SEARCH` nor “Browse imported copies. Originals remain untouched.” is shown.
 
@@ -253,7 +253,7 @@ Replace prefix suggestions with an imported-only tag browser that starts with th
 
 ### Manual Testing Steps:
 
-1. Unlock a populated library and verify the top-right action menu, right filter panel, and responsive stacked layout.
+1. Unlock a populated library and verify the top-right action menu, left filter panel, and responsive stacked layout.
 2. Apply, remove, and clear imported/captured ranges; verify expected intersection and legacy captured-date behavior.
 3. Toggle Images/Videos and confirm the explicit empty-selection state, then restore defaults.
 4. Browse and substring-search the top-ten tag list; combine selected tags with the other filters and verify only active imported media remains.
@@ -284,13 +284,13 @@ No catalogue migration is expected: imported/captured dates and media types alre
 
 #### Automated
 
-- [ ] 1.1 Build the right-side expandable filter workspace, applied-filter bar, and top-right action menu while preserving existing filters
-- [ ] 1.2 Add responsive workspace/menu/filter styling and frontend source/CSS contract coverage
-- [ ] 1.3 Run `cargo test --workspace` and `cargo check --workspace`
+- [x] 1.1 Build the left-side expandable filter workspace, applied-filter bar, and top-right action menu while preserving existing filters
+- [x] 1.2 Add responsive workspace/menu/filter styling and frontend source/CSS contract coverage
+- [x] 1.3 Run `cargo test --workspace` and `cargo check --workspace`
 
 #### Manual
 
-- [ ] 1.4 Verify the workspace, existing filters, action routes, applied-filter removal, and requested header-text removal
+- [x] 1.4 Verify the workspace, existing filters, action routes, applied-filter removal, and requested header-text removal
 
 ### Phase 2: Independent imported and captured date ranges
 

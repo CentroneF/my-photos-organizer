@@ -1,5 +1,5 @@
 # filters-ux
-1. The filters should be on the right
+1. The filters should be on the left
 2. Each filter should be expandable
 3. The applied filter should be shown in a bar on top of the pictures list
 4. Media type filter should be checkboxes

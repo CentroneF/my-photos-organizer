@@ -497,6 +497,10 @@ pub fn App() -> Element {
     let mut tag_suggestions = use_signal(Vec::<String>::new);
     let mut search_items = use_signal(Vec::<SearchLibraryItem>::new);
     let mut search_loading = use_signal(|| false);
+    let mut search_actions_open = use_signal(|| false);
+    let mut search_dates_expanded = use_signal(|| true);
+    let mut search_media_expanded = use_signal(|| true);
+    let mut search_tags_expanded = use_signal(|| true);
 
     use_effect(move || {
         spawn(async move {
@@ -1332,23 +1336,74 @@ pub fn App() -> Element {
                         button { class: "primary-button", r#type: "button", onclick: choose_another, "Open existing library" }
                     } else if step() == "home" {
                         div { class: "library-search", "data-testid": "library-search",
-                            div { class: "library-search-header", div { p { class: "step-label success-label", "LIBRARY SEARCH" } h2 { "Your managed media" } p { class: "lede", "Browse imported copies. Originals remain untouched." } }
-                                div { class: "library-search-actions", button { class: "primary-button", r#type: "button", onclick: move |_| { error.set(String::new()); step.set("import".into()); }, "Import media" } button { class: "secondary-button", r#type: "button", onclick: move |_| { error.set(String::new()); step.set("settings".into()); }, "Library settings" } button { class: "secondary-button", r#type: "button", onclick: close_library, disabled: busy(), if busy() { "Closing…" } else { "Close" } } button { class: "secondary-button", r#type: "button", onclick: move |_| step.set("danger".into()), "Danger zone" } }
-                            }
-                            div { class: "search-filters",
-                                label { "Date to search" select { value: "{search_date_field}", onchange: move |event| search_date_field.set(event.value()), option { value: "selected", "Selected import date" } option { value: "original", "Original media date" } } }
-                                label { "From" input { r#type: "date", value: "{search_start_date}", oninput: move |event| search_start_date.set(event.value()) } }
-                                label { "To" input { r#type: "date", value: "{search_end_date}", oninput: move |event| search_end_date.set(event.value()) } }
-                                label { "Media type" select { value: "{search_media_type}", onchange: move |event| search_media_type.set(event.value()), option { value: "", "All media" } option { value: "image", "Images" } option { value: "video", "Videos" } } }
-                                div { class: "tag-filter", label { "Tags" input { value: "{search_tag_input}", oninput: move |event| search_tag_input.set(event.value()), placeholder: "Type at least two characters", "aria-describedby": "tag-suggestion-help" } } small { id: "tag-suggestion-help", "Suggestions include imported media only." }
-                                    if !tag_suggestions().is_empty() { div { class: "tag-suggestions", role: "listbox", for suggestion in tag_suggestions() { button { class: "tag-suggestion", r#type: "button", role: "option", onclick: move |_| { let suggestion = suggestion.clone(); search_selected_tags.with_mut(|tags| { if !tags.contains(&suggestion) { tags.push(suggestion); tags.sort(); } }); search_tag_input.set(String::new()); tag_suggestions.set(Vec::new()); }, "{suggestion}" } } } }
-                                    if !search_selected_tags().is_empty() { div { class: "selected-tags", "aria-label": "Selected tags", for tag in search_selected_tags() { button { class: "tag-chip", r#type: "button", onclick: move |_| search_selected_tags.with_mut(|tags| tags.retain(|selected| selected != &tag)), "{tag} ×" } } } }
+                            div { class: "library-search-header",
+                                h2 { "Your managed media" }
+                                div { class: "library-action-menu",
+                                    button {
+                                        class: "library-action-trigger",
+                                        r#type: "button",
+                                        "aria-label": "Library actions",
+                                        "aria-expanded": "{search_actions_open}",
+                                        "aria-controls": "library-action-menu",
+                                        onclick: move |_| search_actions_open.set(!search_actions_open()),
+                                        "⚙"
+                                    }
+                                    if search_actions_open() {
+                                        div { id: "library-action-menu", class: "library-action-popover", role: "menu",
+                                            button { r#type: "button", role: "menuitem", onclick: move |_| { error.set(String::new()); search_actions_open.set(false); step.set("import".into()); }, "Import media" }
+                                            button { r#type: "button", role: "menuitem", onclick: move |_| { error.set(String::new()); search_actions_open.set(false); step.set("settings".into()); }, "Library settings" }
+                                            button { r#type: "button", role: "menuitem", onclick: close_library, disabled: busy(), if busy() { "Closing…" } else { "Close library" } }
+                                            button { r#type: "button", role: "menuitem", onclick: move |_| { search_actions_open.set(false); step.set("danger".into()); }, "Danger zone" }
+                                        }
+                                    }
                                 }
                             }
-                            if search_date_field() == "original" { p { class: "privacy-note", "Original dates are available only for imports made after this feature was added. Earlier imports remain searchable by selected import date." } }
-                            if search_loading() { p { class: "privacy-note", "Loading imported media…" } }
-                            if !search_loading() && search_items().is_empty() { div { class: "library-empty", "data-testid": "library-empty-state", h3 { "No media has been imported yet." } p { "Use Import media to safely review a folder and create managed copies. Originals are never moved or deleted." } button { class: "primary-button", r#type: "button", onclick: move |_| step.set("import".into()), "Import media" } } }
-                            if !search_loading() && !search_items().is_empty() { div { class: "media-grid", "data-testid": "library-search-grid", for item in search_items() { article { class: "media-card", div { class: "media-card-preview", if item.preview_state == "available" && item.preview_url.is_some() { if item.media_type == "video" { VideoCardPreview { key: "{item.preview_url.clone().unwrap_or_default()}", preview_url: item.preview_url.clone().unwrap_or_default() } } else { img { src: "{item.preview_url.clone().unwrap_or_default()}", alt: "Preview of {item.filename}" } } } else { p { class: "preview-fallback", "Preview unavailable" } } } div { class: "media-card-details", strong { "{item.filename}" } small { "{item.media_type}" } small { "Selected: " {item.effective_import_date.clone().unwrap_or_else(|| "unavailable".into())} } small { "Original: " {item.original_media_date.clone().unwrap_or_else(|| "not recorded".into())} } if !item.tags.is_empty() { small { "Tags: " {item.tags.join(", ")} } } } } } } }
+                            div { class: "library-search-workspace",
+                                main { class: "library-results",
+                                    if search_date_field() != "selected" || !search_start_date().is_empty() || !search_end_date().is_empty() || !search_media_type().is_empty() || !search_selected_tags().is_empty() {
+                                        div { class: "applied-filter-bar", "aria-label": "Applied filters",
+                                            strong { "Applied filters" }
+                                            if search_date_field() == "original" {
+                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_date_field.set("selected".into()), "Original media date ×" }
+                                            }
+                                            if !search_start_date().is_empty() {
+                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_start_date.set(String::new()), "From: {search_start_date} ×" }
+                                            }
+                                            if !search_end_date().is_empty() {
+                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_end_date.set(String::new()), "To: {search_end_date} ×" }
+                                            }
+                                            if !search_media_type().is_empty() {
+                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_media_type.set(String::new()), "Media: {search_media_type} ×" }
+                                            }
+                                            for tag in search_selected_tags() {
+                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_selected_tags.with_mut(|tags| tags.retain(|selected| selected != &tag)), "{tag} ×" }
+                                            }
+                                            button { class: "clear-filters-button", r#type: "button", onclick: move |_| { search_date_field.set("selected".into()); search_start_date.set(String::new()); search_end_date.set(String::new()); search_media_type.set(String::new()); search_tag_input.set(String::new()); search_selected_tags.set(Vec::new()); tag_suggestions.set(Vec::new()); }, "Clear all" }
+                                        }
+                                    }
+                                    if search_date_field() == "original" { p { class: "privacy-note", "Original dates are available only for imports made after this feature was added. Earlier imports remain searchable by selected import date." } }
+                                    if search_loading() { p { class: "privacy-note", "Loading imported media…" } }
+                                    if !search_loading() && search_items().is_empty() { div { class: "library-empty", "data-testid": "library-empty-state", h3 { "No media has been imported yet." } p { "Use Import media to safely review a folder and create managed copies. Originals are never moved or deleted." } button { class: "primary-button", r#type: "button", onclick: move |_| step.set("import".into()), "Import media" } } }
+                                    if !search_loading() && !search_items().is_empty() { div { class: "media-grid", "data-testid": "library-search-grid", for item in search_items() { article { class: "media-card", div { class: "media-card-preview", if item.preview_state == "available" && item.preview_url.is_some() { if item.media_type == "video" { VideoCardPreview { key: "{item.preview_url.clone().unwrap_or_default()}", preview_url: item.preview_url.clone().unwrap_or_default() } } else { img { src: "{item.preview_url.clone().unwrap_or_default()}", alt: "Preview of {item.filename}" } } } else { p { class: "preview-fallback", "Preview unavailable" } } } div { class: "media-card-details", strong { "{item.filename}" } small { "{item.media_type}" } small { "Selected: " {item.effective_import_date.clone().unwrap_or_else(|| "unavailable".into())} } small { "Original: " {item.original_media_date.clone().unwrap_or_else(|| "not recorded".into())} } if !item.tags.is_empty() { small { "Tags: " {item.tags.join(", ")} } } } } } } }
+                                }
+                                aside { class: "filter-sidebar", "aria-label": "Library filters",
+                                    section { class: "filter-section",
+                                        button { class: "filter-disclosure", r#type: "button", "aria-expanded": "{search_dates_expanded}", onclick: move |_| search_dates_expanded.set(!search_dates_expanded()), span { "Date" } span { if search_dates_expanded() { "−" } else { "+" } } }
+                                        if search_dates_expanded() { div { class: "filter-section-content", label { "Date to search" select { value: "{search_date_field}", onchange: move |event| search_date_field.set(event.value()), option { value: "selected", "Selected import date" } option { value: "original", "Original media date" } } } label { "From" input { r#type: "date", value: "{search_start_date}", oninput: move |event| search_start_date.set(event.value()) } } label { "To" input { r#type: "date", value: "{search_end_date}", oninput: move |event| search_end_date.set(event.value()) } } } }
+                                    }
+                                    section { class: "filter-section",
+                                        button { class: "filter-disclosure", r#type: "button", "aria-expanded": "{search_media_expanded}", onclick: move |_| search_media_expanded.set(!search_media_expanded()), span { "Media type" } span { if search_media_expanded() { "−" } else { "+" } } }
+                                        if search_media_expanded() { div { class: "filter-section-content", label { "Media type" select { value: "{search_media_type}", onchange: move |event| search_media_type.set(event.value()), option { value: "", "All media" } option { value: "image", "Images" } option { value: "video", "Videos" } } } } }
+                                    }
+                                    section { class: "filter-section",
+                                        button { class: "filter-disclosure", r#type: "button", "aria-expanded": "{search_tags_expanded}", onclick: move |_| search_tags_expanded.set(!search_tags_expanded()), span { "Tags" } span { if search_tags_expanded() { "−" } else { "+" } } }
+                                        if search_tags_expanded() { div { class: "filter-section-content tag-filter", label { "Tags" input { value: "{search_tag_input}", oninput: move |event| search_tag_input.set(event.value()), placeholder: "Type at least two characters", "aria-describedby": "tag-suggestion-help" } } small { id: "tag-suggestion-help", "Suggestions include imported media only." }
+                                            if !tag_suggestions().is_empty() { div { class: "tag-suggestions", role: "listbox", for suggestion in tag_suggestions() { button { class: "tag-suggestion", r#type: "button", role: "option", onclick: move |_| { let suggestion = suggestion.clone(); search_selected_tags.with_mut(|tags| { if !tags.contains(&suggestion) { tags.push(suggestion); tags.sort(); } }); search_tag_input.set(String::new()); tag_suggestions.set(Vec::new()); }, "{suggestion}" } } } }
+                                            if !search_selected_tags().is_empty() { div { class: "selected-tags", "aria-label": "Selected tags", for tag in search_selected_tags() { button { class: "tag-chip", r#type: "button", onclick: move |_| search_selected_tags.with_mut(|tags| tags.retain(|selected| selected != &tag)), "{tag} ×" } } } }
+                                        } }
+                                    }
+                                }
+                            }
                         }
                     } else if step() == "settings" {
                         p { class: "step-label success-label", "LIBRARY SETTINGS" }
@@ -1790,7 +1845,7 @@ mod review_layout_tests {
     }
 
     #[test]
-    fn library_search_exposes_date_mode_and_tag_suggestion_hooks() {
+    fn library_search_uses_workspace_menu_and_applied_filter_hooks() {
         let source = include_str!("app.rs");
         for hook in [
             "suggest_library_tags",
@@ -1799,8 +1854,48 @@ mod review_layout_tests {
             "tag-suggestions",
             "selected-tags",
             "Original dates are available only for imports made after this feature was added",
+            "library-search-workspace",
+            "filter-sidebar",
+            "filter-disclosure",
+            "search_dates_expanded",
+            "search_media_expanded",
+            "search_tags_expanded",
+            "library-action-trigger",
+            "Library actions",
+            "library-action-popover",
+            "Applied filters",
+            "applied-filter-chip",
+            "Clear all",
         ] {
             assert!(source.contains(hook), "missing library-search hook: {hook}");
+        }
+        let home_source = source
+            .split("} else if step() == \"home\"")
+            .nth(1)
+            .and_then(|branch| branch.split("} else if step() == \"settings\"").next())
+            .expect("home branch must exist");
+        for removed_text in [
+            "LIBRARY SEARCH",
+            "Browse imported copies. Originals remain untouched.",
+        ] {
+            assert!(
+                !home_source.contains(removed_text),
+                "removed library-search header text remains: {removed_text}"
+            );
+        }
+        for rule in [
+            ".library-search-workspace { display: grid; grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr);",
+            ".filter-sidebar { grid-column: 1; grid-row: 1; display: grid;",
+            ".library-results { grid-column: 2;",
+            ".library-action-popover { position: absolute;",
+            ".applied-filter-bar { min-height:",
+            ".filter-disclosure:focus-visible,",
+            ".library-search-workspace { grid-template-columns: 1fr; }",
+        ] {
+            assert!(
+                STYLES.contains(rule),
+                "missing library-search style: {rule}"
+            );
         }
     }
 

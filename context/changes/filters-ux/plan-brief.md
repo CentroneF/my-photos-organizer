@@ -4,7 +4,7 @@
 
 ## What & Why
 
-This change turns Library Search’s top filter form and four-button header into a clearer media workspace. Filters move into independently expandable sections on the right, active constraints become removable chips above the grid, and routine library actions move into one top-right settings menu.
+This change turns Library Search’s top filter form and four-button header into a clearer media workspace. Filters move into independently expandable sections on the left, active constraints become removable chips above the grid, and routine library actions move into one top-right settings menu.
 
 It also fills functional gaps in the current search contract: Imported and Captured dates become independent ranges, media types become checkboxes, and tags become a frequency-ranked, searchable discovery control.
 
@@ -14,7 +14,7 @@ Library Search already safely queries active imported copies from the encrypted 
 
 ## Desired End State
 
-Users can leave several right-side filter sections open, compose date/media/tag criteria, and immediately see a precise grid with every active filter visible above it. They can remove one chip or clear the entire filter set without losing their place.
+Users can leave several left-side filter sections open, compose date/media/tag criteria, and immediately see a precise grid with every active filter visible above it. They can remove one chip or clear the entire filter set without losing their place.
 
 The action menu retains access to Import media, Library settings, Close library, and Danger zone. Tag discovery starts with ten common imported tags and supports literal substring searching; selected tags combine with AND semantics.
 
@@ -35,7 +35,7 @@ The action menu retains access to Import media, Library settings, Close library,
 
 **In scope:**
 
-- Right-side expandable filter workspace, applied-filter bar, responsive styles, and action menu.
+- Left-side expandable filter workspace, applied-filter bar, responsive styles, and action menu.
 - Independent Imported/Captured date ranges and multi-type media search.
 - Top-ten, frequency-ranked, imported-only tag discovery with literal substring search.
 - Native and frontend regression coverage plus manual verification per phase.
@@ -52,7 +52,7 @@ The Dioxus `home` view remains the search workspace and serializes state to the 
 
 | Phase | What it delivers | Key risk |
 | --- | --- | --- |
-| 1. Workspace shell | Right panel, filter chips, actions menu, label cleanup | Preserve existing routes and responsiveness. |
+| 1. Workspace shell | Left panel, filter chips, actions menu, label cleanup | Preserve existing routes and responsiveness. |
 | 2. Date ranges | Two AND-combined ranges end to end | Legacy captured dates are null. |
 | 3. Media checkboxes | Multi-type selection end to end | Empty selection must be unambiguous. |
 | 4. Tag discovery | Top-ten tags and substring search end to end | Keep matching literal and imported-only. |
