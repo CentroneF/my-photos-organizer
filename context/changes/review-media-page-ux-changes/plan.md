@@ -343,25 +343,25 @@ The catalogue format is incremented for the replacement relationship and support
 
 #### Automated
 
-- [x] 2.1 Extend similar-match results with stable IDs and all-match newest-first ordering
-- [x] 2.2 Implement the accessible side-by-side comparison dialog with Keep Both and Skip actions
-- [x] 2.3 Run `cargo test --workspace` for matching and dialog contract coverage
-- [x] 2.4 Run `cargo tauri build`
+- [x] 2.1 Extend similar-match results with stable IDs and all-match newest-first ordering — 9a8ed1e
+- [x] 2.2 Implement the accessible side-by-side comparison dialog with Keep Both and Skip actions — 9a8ed1e
+- [x] 2.3 Run `cargo test --workspace` for matching and dialog contract coverage — 9a8ed1e
+- [x] 2.4 Run `cargo tauri build` — 9a8ed1e
 
 #### Manual
 
-- [x] 2.5 Verify all-match access, keyboard dismissal, retained errors, Keep Both, and Skip behavior
+- [x] 2.5 Verify all-match access, keyboard dismissal, retained errors, Keep Both, and Skip behavior — 9a8ed1e
 
 ### Phase 3: Safe Substitute and Tag Transfer
 
 #### Automated
 
-- [ ] 3.1 Add the replacement migration and exclude superseded imports from active queries
-- [ ] 3.2 Implement the compensating substitute operation and register its Tauri command
-- [ ] 3.3 Integrate Substitute into the comparison dialog with busy/error handling
-- [ ] 3.4 Run `cargo test --workspace` for migration, success, rejection, and recovery paths
-- [ ] 3.5 Run `cargo tauri build`
+- [x] 3.1 Add the replacement migration and exclude superseded imports from active queries
+- [x] 3.2 Implement the compensating substitute operation and register its Tauri command
+- [x] 3.3 Integrate Substitute into the comparison dialog with busy/error handling
+- [x] 3.4 Run `cargo test --workspace` for migration, success, rejection, and recovery paths
+- [x] 3.5 Run `cargo tauri build`
 
 #### Manual
 
-- [ ] 3.6 Verify substitute tag transfer, source preservation, library visibility, and recoverable cleanup failure handling
+- [x] 3.6 Verify substitute tag transfer, source preservation, library visibility, and recoverable cleanup failure handling

@@ -168,6 +168,15 @@ struct ImportRequest {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SubstituteRequest {
+    candidate_id: i64,
+    replaced_candidate_id: i64,
+    tags: Vec<String>,
+    effective_import_date: String,
+}
+
+#[derive(Serialize)]
 struct ReviewInvokeArgs<T> {
     request: T,
 }
@@ -869,6 +878,55 @@ pub fn App() -> Element {
         }
     };
 
+    let substitute_item = move |_| async move {
+        let (Some(candidate_id), Some(matched)) =
+            (review_item().candidate_id, selected_similar_match())
+        else {
+            return;
+        };
+        error.set(String::new());
+        busy.set(true);
+        let result = serde_wasm_bindgen::to_value(&ReviewInvokeArgs {
+            request: SubstituteRequest {
+                candidate_id,
+                replaced_candidate_id: matched.candidate_id,
+                tags: review_selected_tags(),
+                effective_import_date: import_date(),
+            },
+        })
+        .map_err(|_| JsValue::NULL)
+        .and_then(Ok);
+        let result = match result {
+            Ok(args) => invoke("substitute_review_item", args).await,
+            Err(value) => Err(value),
+        };
+        busy.set(false);
+        match result {
+            Ok(_) => match invoke("next_review_item", JsValue::NULL).await {
+                Ok(value) => match serde_wasm_bindgen::from_value::<ReviewItem>(value) {
+                    Ok(item) => {
+                        selected_similar_match.set(None);
+                        review_selected_tags.set(item.tags.clone());
+                        review_tag_draft.set(String::new());
+                        import_date.set(item.effective_import_date.clone().unwrap_or_default());
+                        review_item.set(item);
+                    }
+                    Err(_) => {
+                        error.set("The next review item returned an unexpected response.".into())
+                    }
+                },
+                Err(value) => error.set(command_error(
+                    value,
+                    "The item was substituted, but the next item could not be loaded.",
+                )),
+            },
+            Err(value) => error.set(command_error(
+                value,
+                "Could not substitute this managed copy safely.",
+            )),
+        }
+    };
+
     let close_library = move |_| async move {
         error.set(String::new());
         busy.set(true);
@@ -1481,6 +1539,7 @@ pub fn App() -> Element {
                                         "Close"
                                     }
                                     button { class: "secondary-button", r#type: "button", onclick: skip_item, disabled: busy(), "Skip" }
+                                    button { class: "secondary-button", r#type: "button", onclick: substitute_item, disabled: busy() || review_item().state != "item", "Substitute" }
                                     button { class: "primary-button", r#type: "button", onclick: import_item, disabled: busy() || review_item().state != "item", if busy() { "Saving decision…" } else { "Keep Both" } }
                                 }
                             }
@@ -1577,6 +1636,10 @@ mod review_layout_tests {
             "Key::Escape",
             "Close",
             "Keep Both",
+            "Substitute",
+            "substitute_review_item",
+            "replaced_candidate_id: matched.candidate_id",
+            "Could not substitute this managed copy safely.",
             "Imported match preview unavailable",
             "visual_comparison_message",
             "comparison-panels",

@@ -106,6 +106,14 @@ pub struct ImportRequest {
     pub tags: Vec<String>,
     pub effective_import_date: String,
 }
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubstituteRequest {
+    pub candidate_id: i64,
+    pub replaced_candidate_id: i64,
+    pub tags: Vec<String>,
+    pub effective_import_date: String,
+}
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DecisionResult {
@@ -465,6 +473,147 @@ pub fn import_review_item(request: ImportRequest) -> Result<DecisionResult, Revi
             message: "Imported a new copy. The original file was not changed.".into(),
         })
     })
+}
+
+pub fn substitute_review_item(request: SubstituteRequest) -> Result<DecisionResult, ReviewError> {
+    let date = validate_date(&request.effective_import_date)?;
+    if request.candidate_id == request.replaced_candidate_id {
+        return Err(error(
+            "invalid_replacement",
+            "Choose a different imported item to substitute.",
+        ));
+    }
+    library::with_catalogue(|connection, library_path| {
+        let (source_path, relative_path) = pending_candidate(connection, request.candidate_id)?;
+        let source = Path::new(&source_path).join(relative_path);
+        readable_file(&source).map_err(|message| error("candidate_unavailable", message))?;
+        let old_path: String = connection.query_row(
+            "SELECT destination_path FROM item_decisions WHERE candidate_id = ?1 AND decision = 'imported' AND destination_path IS NOT NULL AND replaced_by_candidate_id IS NULL",
+            [request.replaced_candidate_id],
+            |row| row.get(0),
+        ).map_err(|value| match value {
+            rusqlite::Error::QueryReturnedNoRows => error("replacement_unavailable", "The selected imported item is no longer available for substitution."),
+            other => database_error(other),
+        })?;
+        let library_root = library_path.canonicalize().map_err(|_| {
+            error(
+                "library_unavailable",
+                "The protected library is unavailable.",
+            )
+        })?;
+        let stored_old = PathBuf::from(old_path);
+        let old_metadata = fs::symlink_metadata(&stored_old).map_err(|_| {
+            error(
+                "replacement_unavailable",
+                "The selected managed copy is missing; no files were changed.",
+            )
+        })?;
+        if old_metadata.file_type().is_symlink() || !old_metadata.is_file() {
+            return Err(error(
+                "unsafe_replacement",
+                "The selected managed copy is not a safe file inside this library.",
+            ));
+        }
+        let old = stored_old.canonicalize().map_err(|_| {
+            error(
+                "replacement_unavailable",
+                "The selected managed copy is missing; no files were changed.",
+            )
+        })?;
+        if !old.starts_with(&library_root) {
+            return Err(error(
+                "unsafe_replacement",
+                "The selected managed copy is not a safe file inside this library.",
+            ));
+        }
+        readable_file(&old).map_err(|_| {
+            error(
+                "replacement_unavailable",
+                "The selected managed copy cannot be read safely.",
+            )
+        })?;
+        let original_date = effective_date(&source);
+        let metadata = review_metadata(&source);
+        let incoming = publish_copy(&source, library_path, &date)?;
+        let recovery = old.with_file_name(format!(
+            ".{}.photo-handler-recovery-{}",
+            old.file_name().unwrap_or_default().to_string_lossy(),
+            random_suffix()
+        ));
+        fs::hard_link(&old, &recovery).map_err(|_| error("recovery_link_failed", "Could not create a recovery copy for the managed item. The new copy was preserved for recovery."))?;
+        let result = record_substitution(
+            connection,
+            &request,
+            &incoming,
+            &old,
+            &recovery,
+            &date,
+            original_date
+                .as_ref()
+                .map(|(d, o)| (d.as_str(), o.as_str())),
+            metadata.gps.as_ref(),
+        );
+        if let Err(record_error) = result {
+            return Err(error(
+                record_error.code,
+                format!(
+                    "{} The new copy and recovery copy were preserved at {}.",
+                    record_error.message,
+                    recovery.display()
+                ),
+            ));
+        }
+        Ok(DecisionResult { decision: "substituted", destination_path: Some(incoming.display().to_string()), message: "Substituted the managed copy and transferred its tags. The original source file was not changed.".into() })
+    })
+}
+
+fn record_substitution(
+    connection: &Connection,
+    request: &SubstituteRequest,
+    destination: &Path,
+    old: &Path,
+    recovery: &Path,
+    date: &str,
+    original_date: Option<(&str, &str)>,
+    gps: Option<&GpsCoordinates>,
+) -> Result<(), ReviewError> {
+    pending_candidate(connection, request.candidate_id)?;
+    let transaction = connection.unchecked_transaction().map_err(database_error)?;
+    let mut tags = request.tags.clone();
+    let old_tags: Vec<String> = transaction.prepare("SELECT t.normalized_name FROM tags t JOIN candidate_tags ct ON ct.tag_id = t.id WHERE ct.candidate_id = ?1").map_err(database_error)?
+        .query_map([request.replaced_candidate_id], |row| row.get(0)).map_err(database_error)?
+        .collect::<Result<_, _>>().map_err(database_error)?;
+    tags.extend(old_tags);
+    for tag in normalize_tags(&tags) {
+        transaction.execute("INSERT INTO tags (normalized_name) VALUES (?1) ON CONFLICT(normalized_name) DO NOTHING", [&tag]).map_err(database_error)?;
+        transaction.execute("INSERT INTO candidate_tags (candidate_id, tag_id) SELECT ?1, id FROM tags WHERE normalized_name = ?2 ON CONFLICT(candidate_id, tag_id) DO NOTHING", params![request.candidate_id, tag]).map_err(database_error)?;
+    }
+    let gps_json = gps.map(serde_json::to_string).transpose().map_err(|_| {
+        error(
+            "gps_serialization_failed",
+            "Could not save the imported media GPS coordinates.",
+        )
+    })?;
+    transaction
+        .execute(
+            "UPDATE review_candidates SET decision = 'imported' WHERE id = ?1 AND decision IS NULL",
+            [request.candidate_id],
+        )
+        .map_err(database_error)?;
+    transaction.execute("INSERT INTO item_decisions (candidate_id, decision, destination_path, effective_import_date, date_origin, original_media_date, original_date_origin, gps_json) VALUES (?1, 'imported', ?2, ?3, 'user', ?4, ?5, ?6)", params![request.candidate_id, destination.display().to_string(), date, original_date.map(|(d, _)| d), original_date.map(|(_, o)| o), gps_json]).map_err(database_error)?;
+    transaction.execute("UPDATE item_decisions SET replaced_by_candidate_id = ?1 WHERE candidate_id = ?2 AND decision = 'imported' AND replaced_by_candidate_id IS NULL", params![request.candidate_id, request.replaced_candidate_id]).map_err(database_error)?;
+    transaction.execute("UPDATE review_sessions SET state = 'complete' WHERE id = (SELECT session_id FROM review_candidates WHERE id = ?1) AND NOT EXISTS (SELECT 1 FROM review_candidates WHERE session_id = (SELECT session_id FROM review_candidates WHERE id = ?1) AND decision IS NULL)", [request.candidate_id]).map_err(database_error)?;
+    fs::remove_file(old).map_err(|_| {
+        error(
+            "replacement_cleanup_failed",
+            "Could not remove the old managed copy; the replacement was not recorded.",
+        )
+    })?;
+    if let Err(commit_error) = transaction.commit() {
+        let _ = fs::hard_link(recovery, old);
+        return Err(database_error(commit_error));
+    }
+    Ok(())
 }
 
 fn completion_item(connection: &Connection) -> Result<ReviewItem, ReviewError> {
@@ -888,7 +1037,7 @@ fn similar_match_candidates(
     active_id: i64,
     hash: u64,
 ) -> Result<Vec<SimilarCandidate>, ReviewError> {
-    let mut statement = connection.prepare("SELECT c.id, c.relative_path, d.decided_at, d.destination_path, c.perceptual_hash_value FROM review_candidates c JOIN item_decisions d ON d.candidate_id = c.id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND c.perceptual_hash_algorithm = ?1 AND c.perceptual_hash_threshold = ?2 AND c.id != ?3 AND c.content_fingerprint_value != (SELECT content_fingerprint_value FROM review_candidates WHERE id = ?3) ORDER BY d.decided_at DESC, c.id").map_err(database_error)?;
+    let mut statement = connection.prepare("SELECT c.id, c.relative_path, d.decided_at, d.destination_path, c.perceptual_hash_value FROM review_candidates c JOIN item_decisions d ON d.candidate_id = c.id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND d.replaced_by_candidate_id IS NULL AND c.perceptual_hash_algorithm = ?1 AND c.perceptual_hash_threshold = ?2 AND c.id != ?3 AND c.content_fingerprint_value != (SELECT content_fingerprint_value FROM review_candidates WHERE id = ?3) ORDER BY d.decided_at DESC, c.id").map_err(database_error)?;
     let rows = statement
         .query_map(
             params![
@@ -1469,14 +1618,14 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch(
             "CREATE TABLE review_candidates (id INTEGER PRIMARY KEY, relative_path TEXT NOT NULL, perceptual_hash_algorithm TEXT, perceptual_hash_threshold INTEGER, perceptual_hash_value INTEGER, content_fingerprint_value BLOB);\
-             CREATE TABLE item_decisions (candidate_id INTEGER, decision TEXT, decided_at TEXT, destination_path TEXT);\
+             CREATE TABLE item_decisions (candidate_id INTEGER, decision TEXT, decided_at TEXT, destination_path TEXT, replaced_by_candidate_id INTEGER NULL);\
              INSERT INTO review_candidates VALUES (1, 'active.jpg', 'dhash-64-v1', 10, 44, x'01'),\
              (2, 'older.jpg', 'dhash-64-v1', 10, 44, x'02'),\
              (3, 'same-time-higher-id.jpg', 'dhash-64-v1', 10, 44, x'02'),\
              (4, 'skipped.jpg', 'dhash-64-v1', 10, 44, x'02'),\
              (5, 'newest.jpg', 'dhash-64-v1', 10, 44, x'02'),\
              (6, 'no-destination.jpg', 'dhash-64-v1', 10, 44, x'02');\
-             INSERT INTO item_decisions VALUES (2, 'imported', '2026-08-02 00:00:00', 'managed/older.jpg'),\
+             INSERT INTO item_decisions (candidate_id, decision, decided_at, destination_path) VALUES (2, 'imported', '2026-08-02 00:00:00', 'managed/older.jpg'),\
              (3, 'imported', '2026-08-02 00:00:00', 'managed/same-time-higher-id.jpg'),\
              (4, 'skipped', '2026-08-04 00:00:00', NULL),\
              (5, 'imported', '2026-08-03 00:00:00', 'managed/newest.jpg'),\
@@ -1492,6 +1641,59 @@ mod tests {
             [5, 2, 3]
         );
         assert!(matches.iter().all(|candidate| !candidate.4.is_empty()));
+    }
+
+    #[test]
+    fn substitute_preserves_the_source_and_transfers_normalized_tags() {
+        let _session_guard = library::test_session_guard();
+        let library_dir = tempdir().unwrap();
+        let source_dir = tempdir().unwrap();
+        let source = source_dir.path().join("new.jpg");
+        fs::write(&source, b"new source bytes").unwrap();
+        library::setup_library(library::SetupLibraryRequest {
+            folder_path: library_dir.path().display().to_string(),
+            password: "correct horse battery staple".into(),
+            password_confirmation: "correct horse battery staple".into(),
+            recovery_question: "pet".into(),
+            recovery_answer: "Mochi".into(),
+        })
+        .unwrap();
+        let old = library_dir
+            .path()
+            .join("2026")
+            .join("2026-09-05")
+            .join("old.jpg");
+        fs::create_dir_all(old.parent().unwrap()).unwrap();
+        fs::write(&old, b"old managed bytes").unwrap();
+        library::with_catalogue(|connection, _| {
+            connection.execute_batch(&format!(
+                "INSERT INTO review_sessions (id, source_path, state) VALUES (1, '{}', 'active'); \
+                 INSERT INTO review_candidates (id, session_id, relative_path, file_size, modified_at, media_type) VALUES (1, 1, 'new.jpg', 16, 0, 'image'), (2, 1, 'old.jpg', 17, 0, 'image'); \
+                 INSERT INTO item_decisions (candidate_id, decision, destination_path) VALUES (2, 'imported', '{}'); \
+                 INSERT INTO tags (id, normalized_name) VALUES (1, 'old-tag'); \
+                 INSERT INTO candidate_tags (candidate_id, tag_id) VALUES (2, 1);",
+                source_dir.path().display(), old.display()
+            )).map_err(database_error)?;
+            Ok::<_, ReviewError>(())
+        }).unwrap();
+
+        substitute_review_item(SubstituteRequest {
+            candidate_id: 1,
+            replaced_candidate_id: 2,
+            tags: vec!["Current Tag".into(), "old-tag".into()],
+            effective_import_date: "2026-09-05".into(),
+        })
+        .unwrap();
+
+        assert_eq!(fs::read(&source).unwrap(), b"new source bytes");
+        assert!(!old.exists());
+        let (replacement, tags): (Option<i64>, Vec<String>) = library::with_catalogue(|connection, _| {
+            let replacement = connection.query_row("SELECT replaced_by_candidate_id FROM item_decisions WHERE candidate_id = 2", [], |row| row.get(0)).map_err(database_error)?;
+            Ok::<_, ReviewError>((replacement, candidate_tags(connection, 1)?))
+        }).unwrap();
+        assert_eq!(replacement, Some(1));
+        assert_eq!(tags, ["current tag", "old-tag"]);
+        library::lock_library();
     }
 
     #[test]

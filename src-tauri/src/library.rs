@@ -20,7 +20,7 @@ const MARKER_FILE: &str = "library.json";
 const DATABASE_FILE: &str = "catalogue.db";
 const LIBRARY_POINTER_FILE: &str = "selected-library.json";
 const MARKER_FORMAT_VERSION: u32 = 1;
-const CATALOGUE_FORMAT_VERSION: u32 = 9;
+const CATALOGUE_FORMAT_VERSION: u32 = 10;
 const KEY_BYTES: usize = 32;
 const SALT_BYTES: usize = 16;
 const NONCE_BYTES: usize = 12;
@@ -743,6 +743,8 @@ fn initialize_catalogue(
         .map_err(|error| SetupLibraryError::new("initialization_failed", format!("Could not initialize catalogue schema: {error}")))?;
     connection.execute_batch("ALTER TABLE item_decisions ADD COLUMN gps_json TEXT NULL; UPDATE schema_migrations SET version = 9; UPDATE library_identity SET format_version = 9;")
         .map_err(|error| SetupLibraryError::new("initialization_failed", format!("Could not initialize catalogue schema: {error}")))?;
+    connection.execute_batch("ALTER TABLE item_decisions ADD COLUMN replaced_by_candidate_id INTEGER NULL REFERENCES review_candidates(id); CREATE INDEX item_decisions_active_import_idx ON item_decisions(decision, replaced_by_candidate_id); UPDATE schema_migrations SET version = 10; UPDATE library_identity SET format_version = 10;")
+        .map_err(|error| SetupLibraryError::new("initialization_failed", format!("Could not initialize catalogue schema: {error}")))?;
     Ok(())
 }
 
@@ -1002,6 +1004,18 @@ fn validate_catalogue(
                     "Could not migrate the protected library catalogue.",
                 )
             })?;
+    }
+    let replacement_column_exists: i64 = transaction
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('item_decisions') WHERE name = 'replaced_by_candidate_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| SetupLibraryError::new("library_migration_failed", "Could not migrate the protected library catalogue."))?;
+    if replacement_column_exists == 0 {
+        transaction
+            .execute_batch("ALTER TABLE item_decisions ADD COLUMN replaced_by_candidate_id INTEGER NULL REFERENCES review_candidates(id); CREATE INDEX IF NOT EXISTS item_decisions_active_import_idx ON item_decisions(decision, replaced_by_candidate_id);")
+            .map_err(|_| SetupLibraryError::new("library_migration_failed", "Could not migrate the protected library catalogue."))?;
     }
     transaction.commit().map_err(|_| {
         SetupLibraryError::new(
@@ -1354,6 +1368,21 @@ mod tests {
         })
         .unwrap();
         assert_eq!(gps_column_count, 1);
+    }
+
+    #[test]
+    fn new_catalogues_include_the_replacement_relationship() {
+        let _session_guard = test_session_guard();
+        let directory = tempdir().unwrap();
+        setup_library(request(directory.path())).unwrap();
+        let column_count = with_catalogue(|connection, _| {
+            connection.query_row(
+                "SELECT count(*) FROM pragma_table_info('item_decisions') WHERE name = 'replaced_by_candidate_id'",
+                [],
+                |row| row.get::<_, i64>(0),
+            ).map_err(|error| SetupLibraryError::new("test_failed", error.to_string()))
+        }).unwrap();
+        assert_eq!(column_count, 1);
     }
 
     #[test]

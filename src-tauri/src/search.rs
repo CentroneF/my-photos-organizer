@@ -174,7 +174,7 @@ fn query_imported_items(
     tags: &[String],
 ) -> Result<Vec<CatalogueItem>, SearchError> {
     let date_column = date_field.column();
-    let mut sql = format!("SELECT d.candidate_id, d.destination_path, c.media_type, d.effective_import_date, d.original_media_date FROM item_decisions d JOIN review_candidates c ON c.id = d.candidate_id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND (?1 IS NULL OR {date_column} >= ?1) AND (?2 IS NULL OR {date_column} <= ?2) AND (?3 IS NULL OR c.media_type = ?3)");
+    let mut sql = format!("SELECT d.candidate_id, d.destination_path, c.media_type, d.effective_import_date, d.original_media_date FROM item_decisions d JOIN review_candidates c ON c.id = d.candidate_id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND d.replaced_by_candidate_id IS NULL AND (?1 IS NULL OR {date_column} >= ?1) AND (?2 IS NULL OR {date_column} <= ?2) AND (?3 IS NULL OR c.media_type = ?3)");
     for index in 0..tags.len() {
         sql.push_str(&format!(" AND EXISTS (SELECT 1 FROM candidate_tags ct JOIN tags t ON t.id = ct.tag_id WHERE ct.candidate_id = d.candidate_id AND t.normalized_name = ?{})", index + 4));
     }
@@ -225,7 +225,7 @@ pub fn suggest_library_tags(
         return Ok(TagSuggestionResult { tags: vec![] });
     }
     let tags = library::with_catalogue(|connection, _| {
-        let mut statement = connection.prepare("SELECT DISTINCT t.normalized_name FROM tags t JOIN candidate_tags ct ON ct.tag_id = t.id JOIN item_decisions d ON d.candidate_id = ct.candidate_id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND t.normalized_name LIKE ?1 ESCAPE '\\' ORDER BY t.normalized_name LIMIT 12").map_err(database_error)?;
+        let mut statement = connection.prepare("SELECT DISTINCT t.normalized_name FROM tags t JOIN candidate_tags ct ON ct.tag_id = t.id JOIN item_decisions d ON d.candidate_id = ct.candidate_id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND d.replaced_by_candidate_id IS NULL AND t.normalized_name LIKE ?1 ESCAPE '\\' ORDER BY t.normalized_name LIMIT 12").map_err(database_error)?;
         let results = statement
             .query_map([format!("{}%", escape_like(&prefix))], |row| row.get(0))
             .map_err(database_error)?
@@ -244,7 +244,7 @@ pub fn recent_library_tags() -> Result<RecentTagsResult, SearchError> {
                  FROM tags t \
                  JOIN candidate_tags ct ON ct.tag_id = t.id \
                  JOIN item_decisions d ON d.candidate_id = ct.candidate_id \
-                 WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL \
+                 WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND d.replaced_by_candidate_id IS NULL \
                  GROUP BY t.id, t.normalized_name \
                  ORDER BY last_used DESC, t.normalized_name ASC LIMIT 5",
             )
