@@ -212,11 +212,11 @@ This change intentionally has no migration. The new identifier creates a separat
 
 #### Automated
 
-- [x] 3.1 Run `cargo test --workspace` after all changes.
-- [x] 3.2 Run `cargo check --workspace` after all changes.
+- [x] 3.1 Run `cargo test --workspace` after all changes. — 847c714
+- [x] 3.2 Run `cargo check --workspace` after all changes. — 847c714
 
 #### Manual
 
-- [x] 3.3 Verify a clean first run under the new identifier.
-- [x] 3.4 Verify an existing protected library can be explicitly selected and unlocked without media changes.
-- [x] 3.5 Verify consistent Photo Organizer branding and icon in the desktop experience.
+- [x] 3.3 Verify a clean first run under the new identifier. — 847c714
+- [x] 3.4 Verify an existing protected library can be explicitly selected and unlocked without media changes. — 847c714
+- [x] 3.5 Verify consistent Photo Organizer branding and icon in the desktop experience. — 847c714
