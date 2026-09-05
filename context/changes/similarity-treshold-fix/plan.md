@@ -2,7 +2,7 @@
 
 ## Overview
 
-Add a library-scoped similarity preference so reviewers can choose Strict (8), Balanced (10), Broad (14), or Very Broad (16). The selected threshold applies immediately to existing compatible dHash records without re-importing or re-hashing media.
+Add a library-scoped similarity preference so reviewers can choose Strict (8), Balanced (10), Broad (14), or Very Broad (20). The selected threshold applies immediately to existing compatible dHash records without re-importing or re-hashing media.
 
 ## Current State Analysis
 
@@ -48,7 +48,7 @@ Deliver the complete library-settings preference: a durable four-choice setting 
 
 **Intent**: Store an authenticated library-owned threshold rather than treating a per-candidate historic value as global behavior.
 
-**Contract**: Bump the catalogue format and create/migrate a one-row settings record with default threshold 10. Export serializable get/update request and result types that accept only 8, 10, 14, or 16, reject all other values with a structured error, and preserve existing catalogues and decisions on migration/reopen.
+**Contract**: Bump the catalogue format and create/migrate a one-row settings record with default threshold 10. Export serializable get/update request and result types that accept only 8, 10, 14, or 20, reject all other values with a structured error, and preserve existing catalogues and decisions on migration/reopen.
 
 #### 2. Active threshold matching and native command boundary
 
@@ -64,7 +64,7 @@ Deliver the complete library-settings preference: a durable four-choice setting 
 
 **Intent**: Keep review focused on the current import decision while giving library owners a clear, persistent place to manage matching behavior.
 
-**Contract**: Add a `Library settings` destination from the library-list header. Its focused screen shows the active protected-library folder path and four accessible mutually exclusive controls: Strict (8), Balanced (10), Broad (14), and Very Broad (16). Load the preference each time the screen opens; updating a preset calls the native command, retains the selected control only on success, and surfaces native errors. Remove all threshold controls and threshold-refresh behavior from Review; its next loaded item reads the persisted preference natively. Style the screen and narrow breakpoint without crowding library-list actions or hiding review controls.
+**Contract**: Add a `Library settings` destination from the library-list header. Its focused screen shows the active protected-library folder path and four accessible mutually exclusive controls: Strict (8), Balanced (10), Broad (14), and Very Broad (20). Load the preference each time the screen opens; updating a preset calls the native command, retains the selected control only on success, and surfaces native errors. Remove all threshold controls and threshold-refresh behavior from Review; its next loaded item reads the persisted preference natively. Style the screen and narrow breakpoint without crowding library-list actions or hiding review controls.
 
 #### 4. Calibrated safety and regression coverage
 
@@ -72,7 +72,7 @@ Deliver the complete library-settings preference: a durable four-choice setting 
 
 **Intent**: Lock the preset contract and prove a higher threshold expands only eligible dHash matches.
 
-**Contract**: Test fresh/migrated default 10, valid preset persistence/reopen, invalid-value rejection, and native setting use. Extend similarity fixtures with values at distances 8, 10, 14, 16, and 17; legacy `NULL`/different stored thresholds; incompatible algorithms; exact fingerprints; skipped/no-destination/replaced candidates. Assert Broad includes through 14, Very Broad includes through 16, and distance 17 remains excluded with deterministic newest-first ordering. Retain unsupported/HEIC/resource-limit boundaries and add UI source/CSS contracts for the Library Settings entry point, protected path, labels, selected state, command hooks, error retention, review-control absence, and responsive layout.
+**Contract**: Test fresh/migrated default 10, valid preset persistence/reopen, invalid-value rejection, and native setting use. Extend similarity fixtures with values at distances 8, 10, 14, 16, 17, 20, and 21; legacy `NULL`/different stored thresholds; incompatible algorithms; exact fingerprints; skipped/no-destination/replaced candidates. Assert Broad includes through 14, Very Broad includes through 20, and distance 21 remains excluded with deterministic newest-first ordering. Retain unsupported/HEIC/resource-limit boundaries and add UI source/CSS contracts for the Library Settings entry point, protected path, labels, selected state, command hooks, error retention, review-control absence, and responsive layout.
 
 ### Success Criteria:
 
@@ -95,7 +95,7 @@ Deliver the complete library-settings preference: a durable four-choice setting 
 
 - Catalogue default, migration, validation, persistence, and reopen behavior for each allowed threshold.
 - Similar-match eligibility remains algorithm/version-based and imported-only, regardless of historic threshold provenance.
-- Hamming-distance boundaries: 8/10/14/16 included by their matching presets and 17 excluded by Very Broad.
+- Hamming-distance boundaries: 8/10/14/20 included by their matching presets and 21 excluded by Very Broad.
 
 ### Integration Tests:
 
@@ -105,7 +105,7 @@ Deliver the complete library-settings preference: a durable four-choice setting 
 ### Manual Testing Steps:
 
 1. From the library list, open Library settings, confirm the protected path, choose each preset, and confirm its active state is clear and persists after locking/reopening the library.
-2. Use the verified classroom photos and unrelated controls to validate the expected Broad (14) and Very Broad (16) results.
+2. Use the verified classroom photos and unrelated controls to validate the expected Broad (14) and Very Broad (20) results.
 3. Confirm Review has no threshold picker, then Import, Skip, and Substitute as applicable; verify source bytes/names/locations do not change.
 
 ## Performance Considerations
@@ -134,10 +134,10 @@ The new library setting defaults existing catalogues to Balanced (10). Historic 
 
 - [x] 1.1 Add the encrypted library threshold preference, migration, and validation contract
 - [x] 1.2 Apply the active preset to native similarity matching and register its Tauri commands
-- [ ] 1.3 Move accessible Strict, Balanced, Broad, and Very Broad controls into Library Settings
-- [ ] 1.4 Run `cargo test --workspace` for preference, compatibility, calibration, and UI contracts
-- [ ] 1.5 Run `cargo tauri build --bundles app` without generating a DMG
+- [x] 1.3 Move accessible Strict, Balanced, Broad, and Very Broad controls into Library Settings
+- [x] 1.4 Run `cargo test --workspace` for preference, compatibility, calibration, and UI contracts
+- [x] 1.5 Run `cargo tauri build --bundles app` without generating a DMG
 
 #### Manual
 
-- [ ] 1.6 Verify Library Settings persistence, classroom-photo recall, review focus, and source preservation
+- [x] 1.6 Verify Library Settings persistence, classroom-photo recall, review focus, and source preservation

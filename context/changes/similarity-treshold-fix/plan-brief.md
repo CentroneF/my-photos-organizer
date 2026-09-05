@@ -5,7 +5,7 @@
 
 ## What & Why
 
-Add a library-scoped choice of Strict (8), Balanced (10), Broad (14), and Very Broad (16) for visual similarity matching. The current threshold of 10 missed verified related classroom photos; the setting improves recall while keeping the dHash algorithm and source-media safety boundary unchanged.
+Add a library-scoped choice of Strict (8), Balanced (10), Broad (14), and Very Broad (20) for visual similarity matching. The current threshold of 10 missed verified related classroom photos; the setting improves recall while keeping the dHash algorithm and source-media safety boundary unchanged.
 
 ## Starting Point
 
@@ -20,7 +20,7 @@ An unlocked library remembers its selected preset and owners can change it in a 
 | Decision | Choice | Why | Source |
 | --- | --- | --- | --- |
 | Preference scope | Per protected library | Keeps behavior stable across devices for one catalogue. | Plan |
-| Presets | 8, 10, 14, 16 | Offers understandable recall levels without raw hash tuning. | Plan |
+| Presets | 8, 10, 14, 20 | Offers understandable recall levels without raw hash tuning. | Plan |
 | Compatibility | Algorithm/version only | Historic thresholds are provenance, not hash compatibility. | Frame |
 | Calibration | Generated tests + real-photo check | Keeps regression coverage shareable while validating the observed use case. | Plan |
 
@@ -45,7 +45,7 @@ The encrypted catalogue owns the selected threshold. Native review matching read
 
 ## Open Risks & Assumptions
 
-- Very Broad (16) can increase false positives; generated boundary tests and manual controls must verify the tradeoff.
+- Very Broad (20) can increase false positives; generated boundary tests and manual controls must verify the tradeoff.
 - Unsupported or ineligible media remains outside visual comparison regardless of the selected preset.
 
 ## Success Criteria (Summary)

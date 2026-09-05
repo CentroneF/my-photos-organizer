@@ -16,6 +16,19 @@ fn current_review_state() -> Result<review::ReviewState, review::ReviewError> {
 }
 
 #[tauri::command]
+fn similarity_threshold() -> Result<library::SimilarityThresholdResult, library::SetupLibraryError>
+{
+    library::similarity_threshold()
+}
+
+#[tauri::command]
+fn set_similarity_threshold(
+    request: library::SetSimilarityThresholdRequest,
+) -> Result<library::SimilarityThresholdResult, library::SetupLibraryError> {
+    library::set_similarity_threshold(request)
+}
+
+#[tauri::command]
 fn next_review_item(app: tauri::AppHandle) -> Result<review::ReviewItem, review::ReviewError> {
     review::next_review_item(app)
 }
@@ -252,6 +265,8 @@ pub fn run() {
             remembered_import_source,
             start_review,
             current_review_state,
+            similarity_threshold,
+            set_similarity_threshold,
             next_review_item,
             skip_review_item,
             import_review_item,
