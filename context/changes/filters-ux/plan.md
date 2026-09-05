@@ -320,10 +320,10 @@ No catalogue migration is expected: imported/captured dates and media types alre
 
 #### Automated
 
-- [x] 4.1 Add and register the imported-only frequency-ranked tag-list command with literal substring coverage
-- [x] 4.2 Replace suggestion UI with searchable, toggleable top-ten tag controls and applied-filter integration
-- [x] 4.3 Run `cargo test --workspace` and `cargo check --workspace`
+- [x] 4.1 Add and register the imported-only frequency-ranked tag-list command with literal substring coverage — 9c274e1
+- [x] 4.2 Replace suggestion UI with searchable, toggleable top-ten tag controls and applied-filter integration — 9c274e1
+- [x] 4.3 Run `cargo test --workspace` and `cargo check --workspace` — 9c274e1
 
 #### Manual
 
-- [x] 4.4 Verify top-ten ranking, substring discovery, tag toggling, and combined-filter AND behavior
+- [x] 4.4 Verify top-ten ranking, substring discovery, tag toggling, and combined-filter AND behavior — 9c274e1
