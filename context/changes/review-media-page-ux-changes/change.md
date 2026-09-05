@@ -3,7 +3,7 @@ change_id: review-media-page-ux-changes
 title: Review media page ux changes
 status: implementing
 created: 2026-08-31
-updated: 2026-09-02
+updated: 2026-09-05
 archived_at: null
 ---
 

@@ -144,6 +144,7 @@ struct ExactMatch {
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SimilarMatch {
+    candidate_id: i64,
     filename: String,
     decided_at: String,
     tags: Vec<String>,
@@ -457,6 +458,7 @@ pub fn App() -> Element {
     let mut review_selected_tags = use_signal(Vec::<String>::new);
     let mut review_tag_draft = use_signal(String::new);
     let mut recent_review_tags = use_signal(Vec::<String>::new);
+    let mut selected_similar_match = use_signal(|| None::<SimilarMatch>);
     let mut import_date = use_signal(String::new);
     let mut busy = use_signal(|| false);
     let mut recovery_question = use_signal(String::new);
@@ -756,6 +758,7 @@ pub fn App() -> Element {
                     match invoke("next_review_item", JsValue::NULL).await {
                         Ok(value) => match serde_wasm_bindgen::from_value::<ReviewItem>(value) {
                             Ok(item) => {
+                                selected_similar_match.set(None);
                                 review_selected_tags.set(item.tags.clone());
                                 review_tag_draft.set(String::new());
                                 import_date
@@ -802,6 +805,7 @@ pub fn App() -> Element {
             Ok(_) => match invoke("next_review_item", JsValue::NULL).await {
                 Ok(value) => match serde_wasm_bindgen::from_value::<ReviewItem>(value) {
                     Ok(item) => {
+                        selected_similar_match.set(None);
                         review_selected_tags.set(item.tags.clone());
                         review_tag_draft.set(String::new());
                         import_date.set(item.effective_import_date.clone().unwrap_or_default());
@@ -846,6 +850,7 @@ pub fn App() -> Element {
             Ok(_) => match invoke("next_review_item", JsValue::NULL).await {
                 Ok(value) => match serde_wasm_bindgen::from_value::<ReviewItem>(value) {
                     Ok(item) => {
+                        selected_similar_match.set(None);
                         review_selected_tags.set(item.tags.clone());
                         review_tag_draft.set(String::new());
                         import_date.set(item.effective_import_date.clone().unwrap_or_default());
@@ -1380,9 +1385,16 @@ pub fn App() -> Element {
                                             strong { "Possible similar pictures" }
                                             for matched in review_item().similar_matches {
                                                 div { class: "similar-history-item",
-                                                    if let Some(url) = matched.preview_url { img { src: "{url}", alt: "Managed preview of {matched.filename}" } }
+                                                    if let Some(url) = matched.preview_url.clone() { img { src: "{url}", alt: "Managed preview of {matched.filename}" } }
                                                     small { "{matched.similarity_label}: {matched.filename} · {matched.decided_at}" }
                                                     if !matched.tags.is_empty() { small { "Tags: " {matched.tags.join(", ")} } }
+                                                    button {
+                                                        class: "secondary-button compare-button",
+                                                        r#type: "button",
+                                                        onclick: move |_| selected_similar_match.set(Some(matched.clone())),
+                                                        disabled: busy(),
+                                                        "Compare"
+                                                    }
                                                 }
                                             }
                                         }
@@ -1419,6 +1431,59 @@ pub fn App() -> Element {
                             h2 { "Review queue is clear." }
                             p { class: "lede", "{review_item().message}" }
                             button { class: "primary-button", r#type: "button", onclick: move |_| step.set("home".into()), "Back to library home" }
+                        }
+                    }
+
+                    if let Some(matched) = selected_similar_match() {
+                        div { class: "comparison-overlay",
+                            div {
+                                class: "comparison-dialog",
+                                role: "dialog",
+                                "aria-modal": "true",
+                                "aria-labelledby": "comparison-dialog-title",
+                                tabindex: "0",
+                                onkeydown: move |event| {
+                                    if event.key() == Key::Escape {
+                                        selected_similar_match.set(None);
+                                    }
+                                },
+                                h2 { id: "comparison-dialog-title", "Compare similar pictures" }
+                                p { class: "privacy-note", "Choose only after reviewing both files. Keep Both imports a new copy; Skip leaves the source unchanged." }
+                                div { class: "comparison-panels",
+                                    article { class: "comparison-panel",
+                                        h3 { "Current candidate" }
+                                        if let Some(url) = review_item().preview_url.clone() {
+                                            img { class: "comparison-preview", src: "{url}", alt: "Preview of current candidate {review_item().filename.clone().unwrap_or_default()}" }
+                                        } else {
+                                            p { class: "preview-fallback", "Current candidate preview unavailable" }
+                                        }
+                                        strong { "{review_item().filename.clone().unwrap_or_default()}" }
+                                    }
+                                    article { class: "comparison-panel",
+                                        h3 { "Imported match" }
+                                        if let Some(url) = matched.preview_url.clone() {
+                                            img { class: "comparison-preview", src: "{url}", alt: "Preview of imported match {matched.filename}" }
+                                        } else {
+                                            p { class: "preview-fallback", "Imported match preview unavailable" }
+                                        }
+                                        strong { "{matched.filename}" }
+                                        small { "Imported: {matched.decided_at}" }
+                                        if !matched.tags.is_empty() { small { "Tags: {matched.tags.join(\", \")}" } }
+                                    }
+                                }
+                                div { class: "comparison-actions",
+                                    button {
+                                        class: "secondary-button",
+                                        r#type: "button",
+                                        autofocus: true,
+                                        onclick: move |_| selected_similar_match.set(None),
+                                        disabled: busy(),
+                                        "Close"
+                                    }
+                                    button { class: "secondary-button", r#type: "button", onclick: skip_item, disabled: busy(), "Skip" }
+                                    button { class: "primary-button", r#type: "button", onclick: import_item, disabled: busy() || review_item().state != "item", if busy() { "Saving decision…" } else { "Keep Both" } }
+                                }
+                            }
                         }
                     }
 
@@ -1499,13 +1564,22 @@ mod review_layout_tests {
     }
 
     #[test]
-    fn review_shows_bounded_advisory_similar_context_without_hiding_actions() {
+    fn review_compares_every_similar_import_without_hiding_actions() {
         let source = include_str!("app.rs");
         for hook in [
             "Possible similar pictures",
             "similar_matches",
+            "candidate_id: i64",
+            "Compare",
+            "selected_similar_match",
+            "role: \"dialog\"",
+            "\"aria-modal\": \"true\"",
+            "Key::Escape",
+            "Close",
+            "Keep Both",
+            "Imported match preview unavailable",
             "visual_comparison_message",
-            "Possible similar picture",
+            "comparison-panels",
             "class: \"decision-actions\"",
         ] {
             assert!(source.contains(hook), "missing similarity hook: {hook}");
@@ -1513,6 +1587,15 @@ mod review_layout_tests {
         assert!(STYLES.contains(
             ".similar-history { display: grid; gap: .45rem; max-height: 12rem; overflow: auto;"
         ));
+        for rule in [
+            ".comparison-overlay { position: fixed; inset: 0;",
+            ".comparison-dialog { width: min(100% - 2rem, 72rem); max-height: calc(100dvh - 2rem); overflow: auto;",
+            ".comparison-panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));",
+            ".comparison-dialog :focus-visible { outline: 3px solid #f2c572;",
+            ".comparison-panels { grid-template-columns: 1fr; }",
+        ] {
+            assert!(STYLES.contains(rule), "missing comparison style: {rule}");
+        }
     }
 
     #[test]

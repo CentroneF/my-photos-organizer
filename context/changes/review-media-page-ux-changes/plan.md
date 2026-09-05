@@ -333,7 +333,7 @@ The catalogue format is incremented for the replacement relationship and support
 - [x] 1.2 Add recent imported-tag query and register its Tauri command
 - [x] 1.3 Implement the full-window review layout and space-delimited removable tag chips
 - [x] 1.4 Run `cargo test --workspace` for metadata, recent-tag, and UI contract coverage
-- [x] 1.5 Run `cargo tauri build`
+- [x] 1.5 Run `cargo tauri build` — 75c74d8
 
 #### Manual
 
@@ -343,14 +343,14 @@ The catalogue format is incremented for the replacement relationship and support
 
 #### Automated
 
-- [ ] 2.1 Extend similar-match results with stable IDs and all-match newest-first ordering
-- [ ] 2.2 Implement the accessible side-by-side comparison dialog with Keep Both and Skip actions
-- [ ] 2.3 Run `cargo test --workspace` for matching and dialog contract coverage
-- [ ] 2.4 Run `cargo tauri build`
+- [x] 2.1 Extend similar-match results with stable IDs and all-match newest-first ordering
+- [x] 2.2 Implement the accessible side-by-side comparison dialog with Keep Both and Skip actions
+- [x] 2.3 Run `cargo test --workspace` for matching and dialog contract coverage
+- [x] 2.4 Run `cargo tauri build`
 
 #### Manual
 
-- [ ] 2.5 Verify all-match access, keyboard dismissal, retained errors, Keep Both, and Skip behavior
+- [x] 2.5 Verify all-match access, keyboard dismissal, retained errors, Keep Both, and Skip behavior
 
 ### Phase 3: Safe Substitute and Tag Transfer
 

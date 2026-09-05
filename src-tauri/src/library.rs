@@ -958,30 +958,6 @@ fn validate_catalogue(
                 .execute_batch("ALTER TABLE review_candidates ADD COLUMN perceptual_hash_threshold INTEGER NULL;")
                 .map_err(|_| SetupLibraryError::new("library_migration_failed", "Could not migrate the protected library catalogue."))?;
         }
-        if version < 9 {
-            let gps_column_exists: i64 = transaction
-                .query_row(
-                    "SELECT count(*) FROM pragma_table_info('item_decisions') WHERE name = 'gps_json'",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(|_| {
-                    SetupLibraryError::new(
-                        "library_migration_failed",
-                        "Could not migrate the protected library catalogue.",
-                    )
-                })?;
-            if gps_column_exists == 0 {
-                transaction
-                    .execute_batch("ALTER TABLE item_decisions ADD COLUMN gps_json TEXT NULL;")
-                    .map_err(|_| {
-                        SetupLibraryError::new(
-                            "library_migration_failed",
-                            "Could not migrate the protected library catalogue.",
-                        )
-                    })?;
-            }
-        }
         transaction
             .execute(
                 "UPDATE schema_migrations SET version = ?1",
@@ -998,6 +974,28 @@ fn validate_catalogue(
                 "UPDATE library_identity SET format_version = ?1 WHERE id = 1",
                 [CATALOGUE_FORMAT_VERSION],
             )
+            .map_err(|_| {
+                SetupLibraryError::new(
+                    "library_migration_failed",
+                    "Could not migrate the protected library catalogue.",
+                )
+            })?;
+    }
+    let gps_column_exists: i64 = transaction
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('item_decisions') WHERE name = 'gps_json'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| {
+            SetupLibraryError::new(
+                "library_migration_failed",
+                "Could not migrate the protected library catalogue.",
+            )
+        })?;
+    if gps_column_exists == 0 {
+        transaction
+            .execute_batch("ALTER TABLE item_decisions ADD COLUMN gps_json TEXT NULL;")
             .map_err(|_| {
                 SetupLibraryError::new(
                     "library_migration_failed",
@@ -1317,6 +1315,45 @@ mod tests {
         key.fill(0);
         assert_eq!(version, CATALOGUE_FORMAT_VERSION);
         assert_eq!(threshold_column_count, 1);
+    }
+
+    #[test]
+    fn unlock_repairs_a_missing_gps_column_in_a_current_catalogue() {
+        let _session_guard = test_session_guard();
+        let directory = tempdir().unwrap();
+        setup_library(request(directory.path())).unwrap();
+        let marker: LibraryMarker = serde_json::from_slice(
+            &fs::read(directory.path().join(STATE_DIR).join(MARKER_FILE)).unwrap(),
+        )
+        .unwrap();
+        let mut key = unwrap_key(&marker.password_wrap, "correct horse battery staple").unwrap();
+        let connection =
+            Connection::open(directory.path().join(STATE_DIR).join(DATABASE_FILE)).unwrap();
+        connection
+            .pragma_update(None, "key", format!("x'{}'", hex::encode(&key)))
+            .unwrap();
+        connection
+            .execute_batch("ALTER TABLE item_decisions DROP COLUMN gps_json;")
+            .unwrap();
+        key.fill(0);
+
+        unlock_library(
+            &directory.path().display().to_string(),
+            unlock_request("correct horse battery staple"),
+        )
+        .unwrap();
+
+        let gps_column_count = with_catalogue(|connection, _| {
+            connection
+                .query_row(
+                    "SELECT count(*) FROM pragma_table_info('item_decisions') WHERE name = 'gps_json'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|error| SetupLibraryError::new("test_failed", error.to_string()))
+        })
+        .unwrap();
+        assert_eq!(gps_column_count, 1);
     }
 
     #[test]

@@ -19,7 +19,6 @@ use crate::search;
 const CONTENT_FINGERPRINT_ALGORITHM: &str = "blake3-256-v1";
 const EXACT_HISTORY_LIMIT: usize = 3;
 const PERCEPTUAL_HASH_ALGORITHM: &str = "dhash-64-v1";
-const SIMILARITY_LIMIT: usize = 3;
 const SIMILARITY_THRESHOLD: u32 = 10;
 const MAX_DECODED_PIXELS: u64 = 40_000_000;
 
@@ -87,6 +86,7 @@ pub struct ExactMatch {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SimilarMatch {
+    pub candidate_id: i64,
     pub filename: String,
     pub decided_at: String,
     pub tags: Vec<String>,
@@ -861,6 +861,33 @@ fn similar_matches(
     active_id: i64,
     hash: u64,
 ) -> Result<Vec<SimilarMatch>, ReviewError> {
+    let candidates = similar_match_candidates(connection, active_id, hash)?;
+    Ok(candidates
+        .into_iter()
+        .map(|(_, id, relative_path, decided_at, destination)| {
+            Ok::<_, ReviewError>(SimilarMatch {
+                candidate_id: id,
+                filename: Path::new(&relative_path)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+                decided_at,
+                tags: candidate_tags(connection, id)?,
+                preview_url: search::safe_preview_url(app, root, Path::new(&destination)).0,
+                similarity_label: "Possible similar picture",
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?)
+}
+
+type SimilarCandidate = (u32, i64, String, String, String);
+
+fn similar_match_candidates(
+    connection: &Connection,
+    active_id: i64,
+    hash: u64,
+) -> Result<Vec<SimilarCandidate>, ReviewError> {
     let mut statement = connection.prepare("SELECT c.id, c.relative_path, d.decided_at, d.destination_path, c.perceptual_hash_value FROM review_candidates c JOIN item_decisions d ON d.candidate_id = c.id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND c.perceptual_hash_algorithm = ?1 AND c.perceptual_hash_threshold = ?2 AND c.id != ?3 AND c.content_fingerprint_value != (SELECT content_fingerprint_value FROM review_candidates WHERE id = ?3) ORDER BY d.decided_at DESC, c.id").map_err(database_error)?;
     let rows = statement
         .query_map(
@@ -890,29 +917,8 @@ fn similar_matches(
         }
         candidates.push((distance, id, relative_path, decided_at, destination));
     }
-    candidates.sort_by(|left, right| {
-        left.0
-            .cmp(&right.0)
-            .then_with(|| right.3.cmp(&left.3))
-            .then_with(|| left.1.cmp(&right.1))
-    });
-    Ok(candidates
-        .into_iter()
-        .take(SIMILARITY_LIMIT)
-        .map(|(_, id, relative_path, decided_at, destination)| {
-            Ok::<_, ReviewError>(SimilarMatch {
-                filename: Path::new(&relative_path)
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned(),
-                decided_at,
-                tags: candidate_tags(connection, id)?,
-                preview_url: search::safe_preview_url(app, root, Path::new(&destination)).0,
-                similarity_label: "Possible similar picture",
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?)
+    candidates.sort_by(|left, right| right.3.cmp(&left.3).then_with(|| left.1.cmp(&right.1)));
+    Ok(candidates)
 }
 fn review_state(connection: &Connection) -> Result<ReviewState, ReviewError> {
     match connection.query_row("SELECT source_path, state, (SELECT count(*) FROM review_candidates WHERE session_id = review_sessions.id AND decision IS NULL) FROM review_sessions ORDER BY id DESC LIMIT 1", [], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, u64>(2)?))) { Ok((source_path, state, candidate_count)) => Ok(ReviewState { state: if state == "complete" { "complete" } else { "resumable" }, source_path: Some(source_path), candidate_count, message: if state == "complete" { "Resume to check this source for newly added supported files. Originals are never modified.".into() } else { "Resume the safe read-only review. Originals are never modified.".into() } }), Err(rusqlite::Error::QueryReturnedNoRows) => Ok(ReviewState { state: "none", source_path: None, candidate_count: 0, message: "No unfinished review is available.".into() }), Err(error) => Err(database_error(error)) }
@@ -1456,6 +1462,36 @@ mod tests {
         fs::write(&corrupt, b"not an image").unwrap();
         assert_eq!(perceptual_hash(&video).unwrap_err().0, "unsupported");
         assert_eq!(perceptual_hash(&corrupt).unwrap_err().0, "decode_failed");
+    }
+
+    #[test]
+    fn similar_matches_include_every_imported_candidate_newest_first() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE review_candidates (id INTEGER PRIMARY KEY, relative_path TEXT NOT NULL, perceptual_hash_algorithm TEXT, perceptual_hash_threshold INTEGER, perceptual_hash_value INTEGER, content_fingerprint_value BLOB);\
+             CREATE TABLE item_decisions (candidate_id INTEGER, decision TEXT, decided_at TEXT, destination_path TEXT);\
+             INSERT INTO review_candidates VALUES (1, 'active.jpg', 'dhash-64-v1', 10, 44, x'01'),\
+             (2, 'older.jpg', 'dhash-64-v1', 10, 44, x'02'),\
+             (3, 'same-time-higher-id.jpg', 'dhash-64-v1', 10, 44, x'02'),\
+             (4, 'skipped.jpg', 'dhash-64-v1', 10, 44, x'02'),\
+             (5, 'newest.jpg', 'dhash-64-v1', 10, 44, x'02'),\
+             (6, 'no-destination.jpg', 'dhash-64-v1', 10, 44, x'02');\
+             INSERT INTO item_decisions VALUES (2, 'imported', '2026-08-02 00:00:00', 'managed/older.jpg'),\
+             (3, 'imported', '2026-08-02 00:00:00', 'managed/same-time-higher-id.jpg'),\
+             (4, 'skipped', '2026-08-04 00:00:00', NULL),\
+             (5, 'imported', '2026-08-03 00:00:00', 'managed/newest.jpg'),\
+             (6, 'imported', '2026-08-05 00:00:00', NULL);",
+        ).unwrap();
+
+        let matches = similar_match_candidates(&connection, 1, 44).unwrap();
+        assert_eq!(
+            matches
+                .iter()
+                .map(|candidate| candidate.1)
+                .collect::<Vec<_>>(),
+            [5, 2, 3]
+        );
+        assert!(matches.iter().all(|candidate| !candidate.4.is_empty()));
     }
 
     #[test]
