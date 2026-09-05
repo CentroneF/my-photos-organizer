@@ -83,6 +83,7 @@ button:disabled { cursor: wait; opacity: .65; }
 .review-field { display: grid; gap: .45rem; color: #3f4559; font-size: .78rem; font-weight: 800; }
 .review-field input { width: 100%; padding: .82rem .9rem; border: 1px solid #d4d0c8; border-radius: .7rem; outline: none; color: #17213b; background: #fffdf8; }
 .review-field input:focus { border-color: #6a64ad; box-shadow: 0 0 0 3px rgba(106, 100, 173, .13); }
+.similarity-settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .45rem; margin: 0 0 1.5rem; padding: .7rem; border: 1px solid #d8d3c8; border-radius: .7rem; background: #f8f6f1; }.similarity-settings > strong, .similarity-settings > small { grid-column: 1 / -1; }.similarity-settings > small { color: #676b78; font-size: .72rem; }.similarity-preset { display: flex; gap: .4rem; align-items: center; min-height: 2.35rem; padding: .45rem .55rem; border: 1px solid #d4d0c8; border-radius: .55rem; color: #3f4559; background: #fffdf8; font-size: .76rem; font-weight: 800; cursor: pointer; }.similarity-preset[data-selected="true"] { border-color: #5b55a5; color: #4d488e; background: #e7e4f5; }.similarity-preset:has(input:focus-visible) { outline: 3px solid #f2c572; outline-offset: 2px; }.similarity-preset input { accent-color: #5b55a5; }
 .review-tag-editor { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; min-height: 3rem; padding: .45rem; border: 1px solid #d4d0c8; border-radius: .7rem; background: #fffdf8; }
 .review-tag-editor input { flex: 1 1 10rem; min-width: 8rem; padding: .45rem; border: 0; box-shadow: none; }
 .review-tag-editor input:focus { box-shadow: none; }
@@ -130,5 +131,6 @@ button:disabled { cursor: wait; opacity: .65; }
   .comparison-panels { grid-template-columns: 1fr; }
   .comparison-actions { grid-template-columns: 1fr; }
   .decision-actions { gap: .7rem; }
+  .similarity-settings { grid-template-columns: 1fr; }
   .library-search { padding: .75rem; }.search-filters { grid-template-columns: 1fr; }
 }

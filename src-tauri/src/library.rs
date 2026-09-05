@@ -20,7 +20,8 @@ const MARKER_FILE: &str = "library.json";
 const DATABASE_FILE: &str = "catalogue.db";
 const LIBRARY_POINTER_FILE: &str = "selected-library.json";
 const MARKER_FORMAT_VERSION: u32 = 1;
-const CATALOGUE_FORMAT_VERSION: u32 = 10;
+const CATALOGUE_FORMAT_VERSION: u32 = 12;
+pub const DEFAULT_SIMILARITY_THRESHOLD: u32 = 10;
 const KEY_BYTES: usize = 32;
 const SALT_BYTES: usize = 16;
 const NONCE_BYTES: usize = 12;
@@ -109,6 +110,18 @@ pub struct CleanLibraryRequest {
 pub struct CleanLibraryResult {
     pub moved_folder_count: usize,
     pub message: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetSimilarityThresholdRequest {
+    pub threshold: u32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimilarityThresholdResult {
+    pub threshold: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -223,6 +236,62 @@ pub fn active_library_path() -> Result<PathBuf, SetupLibraryError> {
     })?;
     validate_existing_library(&session.library_path)?;
     Ok(session.library_path.clone())
+}
+
+pub fn similarity_threshold() -> Result<SimilarityThresholdResult, SetupLibraryError> {
+    with_catalogue(|connection, _| {
+        Ok(SimilarityThresholdResult {
+            threshold: similarity_threshold_for(connection)?,
+        })
+    })
+}
+
+pub fn set_similarity_threshold(
+    request: SetSimilarityThresholdRequest,
+) -> Result<SimilarityThresholdResult, SetupLibraryError> {
+    validate_similarity_threshold(request.threshold)?;
+    with_catalogue(|connection, _| {
+        connection
+            .execute(
+                "UPDATE library_settings SET similarity_threshold = ?1 WHERE id = 1",
+                [request.threshold],
+            )
+            .map_err(|_| {
+                SetupLibraryError::new(
+                    "settings_unavailable",
+                    "Could not save the library similarity preference.",
+                )
+            })?;
+        Ok(SimilarityThresholdResult {
+            threshold: request.threshold,
+        })
+    })
+}
+
+pub(crate) fn similarity_threshold_for(connection: &Connection) -> Result<u32, SetupLibraryError> {
+    connection
+        .query_row(
+            "SELECT similarity_threshold FROM library_settings WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| {
+            SetupLibraryError::new(
+                "settings_unavailable",
+                "Could not read the library similarity preference.",
+            )
+        })
+}
+
+fn validate_similarity_threshold(threshold: u32) -> Result<(), SetupLibraryError> {
+    if matches!(threshold, 8 | 10 | 14 | 20) {
+        Ok(())
+    } else {
+        Err(SetupLibraryError::new(
+            "invalid_similarity_threshold",
+            "Choose Strict (8), Balanced (10), Broad (14), or Very Broad (20).",
+        ))
+    }
 }
 
 pub fn clean_library(
@@ -745,6 +814,10 @@ fn initialize_catalogue(
         .map_err(|error| SetupLibraryError::new("initialization_failed", format!("Could not initialize catalogue schema: {error}")))?;
     connection.execute_batch("ALTER TABLE item_decisions ADD COLUMN replaced_by_candidate_id INTEGER NULL REFERENCES review_candidates(id); CREATE INDEX item_decisions_active_import_idx ON item_decisions(decision, replaced_by_candidate_id); UPDATE schema_migrations SET version = 10; UPDATE library_identity SET format_version = 10;")
         .map_err(|error| SetupLibraryError::new("initialization_failed", format!("Could not initialize catalogue schema: {error}")))?;
+    connection.execute_batch(&format!("CREATE TABLE library_settings (id INTEGER PRIMARY KEY CHECK (id = 1), similarity_threshold INTEGER NOT NULL CHECK (similarity_threshold IN (8, 10, 14, 16))); INSERT INTO library_settings (id, similarity_threshold) VALUES (1, {DEFAULT_SIMILARITY_THRESHOLD}); UPDATE schema_migrations SET version = 11; UPDATE library_identity SET format_version = 11;"))
+        .map_err(|error| SetupLibraryError::new("initialization_failed", format!("Could not initialize catalogue schema: {error}")))?;
+    connection.execute_batch("ALTER TABLE library_settings RENAME TO library_settings_v11; CREATE TABLE library_settings (id INTEGER PRIMARY KEY CHECK (id = 1), similarity_threshold INTEGER NOT NULL CHECK (similarity_threshold IN (8, 10, 14, 20))); INSERT INTO library_settings (id, similarity_threshold) SELECT id, similarity_threshold FROM library_settings_v11; DROP TABLE library_settings_v11; UPDATE schema_migrations SET version = 12; UPDATE library_identity SET format_version = 12;")
+        .map_err(|error| SetupLibraryError::new("initialization_failed", format!("Could not initialize catalogue schema: {error}")))?;
     Ok(())
 }
 
@@ -960,6 +1033,16 @@ fn validate_catalogue(
                 .execute_batch("ALTER TABLE review_candidates ADD COLUMN perceptual_hash_threshold INTEGER NULL;")
                 .map_err(|_| SetupLibraryError::new("library_migration_failed", "Could not migrate the protected library catalogue."))?;
         }
+        if version < 11 {
+            transaction
+                .execute_batch(&format!("CREATE TABLE IF NOT EXISTS library_settings (id INTEGER PRIMARY KEY CHECK (id = 1), similarity_threshold INTEGER NOT NULL CHECK (similarity_threshold IN (8, 10, 14, 16))); INSERT OR IGNORE INTO library_settings (id, similarity_threshold) VALUES (1, {DEFAULT_SIMILARITY_THRESHOLD});"))
+                .map_err(|_| SetupLibraryError::new("library_migration_failed", "Could not migrate the protected library catalogue."))?;
+        }
+        if version < 12 {
+            transaction
+                .execute_batch("ALTER TABLE library_settings RENAME TO library_settings_v11; CREATE TABLE library_settings (id INTEGER PRIMARY KEY CHECK (id = 1), similarity_threshold INTEGER NOT NULL CHECK (similarity_threshold IN (8, 10, 14, 20))); INSERT INTO library_settings (id, similarity_threshold) SELECT id, similarity_threshold FROM library_settings_v11; DROP TABLE library_settings_v11;")
+                .map_err(|_| SetupLibraryError::new("library_migration_failed", "Could not migrate the protected library catalogue."))?;
+        }
         transaction
             .execute(
                 "UPDATE schema_migrations SET version = ?1",
@@ -1017,6 +1100,9 @@ fn validate_catalogue(
             .execute_batch("ALTER TABLE item_decisions ADD COLUMN replaced_by_candidate_id INTEGER NULL REFERENCES review_candidates(id); CREATE INDEX IF NOT EXISTS item_decisions_active_import_idx ON item_decisions(decision, replaced_by_candidate_id);")
             .map_err(|_| SetupLibraryError::new("library_migration_failed", "Could not migrate the protected library catalogue."))?;
     }
+    transaction
+        .execute_batch(&format!("CREATE TABLE IF NOT EXISTS library_settings (id INTEGER PRIMARY KEY CHECK (id = 1), similarity_threshold INTEGER NOT NULL CHECK (similarity_threshold IN (8, 10, 14, 20))); INSERT OR IGNORE INTO library_settings (id, similarity_threshold) VALUES (1, {DEFAULT_SIMILARITY_THRESHOLD});"))
+        .map_err(|_| SetupLibraryError::new("library_migration_failed", "Could not migrate the protected library catalogue."))?;
     transaction.commit().map_err(|_| {
         SetupLibraryError::new(
             "library_migration_failed",
@@ -1075,6 +1161,40 @@ mod tests {
         assert!(state.join(MARKER_FILE).is_file());
         assert!(state.join(DATABASE_FILE).is_file());
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+        assert_eq!(
+            similarity_threshold().unwrap().threshold,
+            DEFAULT_SIMILARITY_THRESHOLD
+        );
+    }
+
+    #[test]
+    fn similarity_threshold_accepts_only_presets_and_persists_after_reopen() {
+        let _session_guard = test_session_guard();
+        let directory = tempdir().unwrap();
+        setup_library(request(directory.path())).unwrap();
+
+        for threshold in [8, 10, 14, 20] {
+            assert_eq!(
+                set_similarity_threshold(SetSimilarityThresholdRequest { threshold })
+                    .unwrap()
+                    .threshold,
+                threshold
+            );
+        }
+        assert_eq!(
+            set_similarity_threshold(SetSimilarityThresholdRequest { threshold: 12 })
+                .unwrap_err()
+                .code,
+            "invalid_similarity_threshold"
+        );
+
+        lock_library();
+        unlock_library(
+            &directory.path().display().to_string(),
+            unlock_request("correct horse battery staple"),
+        )
+        .unwrap();
+        assert_eq!(similarity_threshold().unwrap().threshold, 20);
     }
 
     #[test]
@@ -1326,9 +1446,17 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
+        let settings_threshold: u32 = connection
+            .query_row(
+                "SELECT similarity_threshold FROM library_settings WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         key.fill(0);
         assert_eq!(version, CATALOGUE_FORMAT_VERSION);
         assert_eq!(threshold_column_count, 1);
+        assert_eq!(settings_threshold, DEFAULT_SIMILARITY_THRESHOLD);
     }
 
     #[test]

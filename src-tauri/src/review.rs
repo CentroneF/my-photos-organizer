@@ -19,7 +19,6 @@ use crate::search;
 const CONTENT_FINGERPRINT_ALGORITHM: &str = "blake3-256-v1";
 const EXACT_HISTORY_LIMIT: usize = 3;
 const PERCEPTUAL_HASH_ALGORITHM: &str = "dhash-64-v1";
-const SIMILARITY_THRESHOLD: u32 = 10;
 const MAX_DECODED_PIXELS: u64 = 40_000_000;
 
 #[derive(Debug, Serialize)]
@@ -344,10 +343,11 @@ pub fn next_review_item(app: tauri::AppHandle) -> Result<ReviewItem, ReviewError
         };
         let (similar_matches, visual_comparison_message) = match visual_result {
             Ok(hash) => {
-                if connection.execute("UPDATE review_candidates SET perceptual_hash_algorithm = ?1, perceptual_hash_value = ?2, perceptual_hash_threshold = ?3, visual_comparison_state = 'available' WHERE id = ?4", params![PERCEPTUAL_HASH_ALGORITHM, hash as i64, SIMILARITY_THRESHOLD as i64, candidate_id]).is_err() {
+                let threshold = library::similarity_threshold_for(connection)?;
+                if connection.execute("UPDATE review_candidates SET perceptual_hash_algorithm = ?1, perceptual_hash_value = ?2, perceptual_hash_threshold = ?3, visual_comparison_state = 'available' WHERE id = ?4", params![PERCEPTUAL_HASH_ALGORITHM, hash as i64, threshold as i64, candidate_id]).is_err() {
                     return Ok(unavailable_item(candidate_id, relative_path, filename, media_type, date, origin, tags, "Comparison results could not be saved. Refresh the review and try again; no decision was made.".into()));
                 }
-                let matches = match similar_matches(connection, &app, library_path, candidate_id, hash) {
+                let matches = match similar_matches(connection, &app, library_path, candidate_id, hash, threshold) {
                     Ok(matches) => matches,
                     Err(_) => return Ok(unavailable_item(candidate_id, relative_path, filename, media_type, date, origin, tags, "Comparison history is temporarily unavailable. Refresh the review and try again; no decision was made.".into())),
                 };
@@ -1009,8 +1009,9 @@ fn similar_matches(
     root: &Path,
     active_id: i64,
     hash: u64,
+    threshold: u32,
 ) -> Result<Vec<SimilarMatch>, ReviewError> {
-    let candidates = similar_match_candidates(connection, active_id, hash)?;
+    let candidates = similar_match_candidates(connection, active_id, hash, threshold)?;
     Ok(candidates
         .into_iter()
         .map(|(_, id, relative_path, decided_at, destination)| {
@@ -1036,32 +1037,26 @@ fn similar_match_candidates(
     connection: &Connection,
     active_id: i64,
     hash: u64,
+    threshold: u32,
 ) -> Result<Vec<SimilarCandidate>, ReviewError> {
-    let mut statement = connection.prepare("SELECT c.id, c.relative_path, d.decided_at, d.destination_path, c.perceptual_hash_value FROM review_candidates c JOIN item_decisions d ON d.candidate_id = c.id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND d.replaced_by_candidate_id IS NULL AND c.perceptual_hash_algorithm = ?1 AND c.perceptual_hash_threshold = ?2 AND c.id != ?3 AND c.content_fingerprint_value != (SELECT content_fingerprint_value FROM review_candidates WHERE id = ?3) ORDER BY d.decided_at DESC, c.id").map_err(database_error)?;
+    let mut statement = connection.prepare("SELECT c.id, c.relative_path, d.decided_at, d.destination_path, c.perceptual_hash_value FROM review_candidates c JOIN item_decisions d ON d.candidate_id = c.id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND d.replaced_by_candidate_id IS NULL AND c.perceptual_hash_algorithm = ?1 AND c.perceptual_hash_value IS NOT NULL AND c.id != ?2 AND c.content_fingerprint_value != (SELECT content_fingerprint_value FROM review_candidates WHERE id = ?2) ORDER BY d.decided_at DESC, c.id").map_err(database_error)?;
     let rows = statement
-        .query_map(
-            params![
-                PERCEPTUAL_HASH_ALGORITHM,
-                SIMILARITY_THRESHOLD as i64,
-                active_id
-            ],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                ))
-            },
-        )
+        .query_map(params![PERCEPTUAL_HASH_ALGORITHM, active_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })
         .map_err(database_error)?;
     let mut candidates = Vec::new();
     for row in rows {
         let (id, relative_path, decided_at, destination, candidate_hash) =
             row.map_err(database_error)?;
         let distance = (hash ^ candidate_hash as u64).count_ones();
-        if distance > SIMILARITY_THRESHOLD {
+        if distance > threshold {
             continue;
         }
         candidates.push((distance, id, relative_path, decided_at, destination));
@@ -1594,10 +1589,12 @@ mod tests {
         unrelated_image.save(&unrelated).unwrap();
         let base_hash = perceptual_hash(&base).unwrap();
         assert!(
-            (base_hash ^ perceptual_hash(&brighter).unwrap()).count_ones() <= SIMILARITY_THRESHOLD
+            (base_hash ^ perceptual_hash(&brighter).unwrap()).count_ones()
+                <= library::DEFAULT_SIMILARITY_THRESHOLD
         );
         assert!(
-            (base_hash ^ perceptual_hash(&unrelated).unwrap()).count_ones() > SIMILARITY_THRESHOLD
+            (base_hash ^ perceptual_hash(&unrelated).unwrap()).count_ones()
+                > library::DEFAULT_SIMILARITY_THRESHOLD
         );
     }
 
@@ -1614,33 +1611,49 @@ mod tests {
     }
 
     #[test]
-    fn similar_matches_include_every_imported_candidate_newest_first() {
+    fn similar_matches_use_active_threshold_without_historic_threshold_gates() {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch(
             "CREATE TABLE review_candidates (id INTEGER PRIMARY KEY, relative_path TEXT NOT NULL, perceptual_hash_algorithm TEXT, perceptual_hash_threshold INTEGER, perceptual_hash_value INTEGER, content_fingerprint_value BLOB);\
              CREATE TABLE item_decisions (candidate_id INTEGER, decision TEXT, decided_at TEXT, destination_path TEXT, replaced_by_candidate_id INTEGER NULL);\
-             INSERT INTO review_candidates VALUES (1, 'active.jpg', 'dhash-64-v1', 10, 44, x'01'),\
-             (2, 'older.jpg', 'dhash-64-v1', 10, 44, x'02'),\
-             (3, 'same-time-higher-id.jpg', 'dhash-64-v1', 10, 44, x'02'),\
-             (4, 'skipped.jpg', 'dhash-64-v1', 10, 44, x'02'),\
-             (5, 'newest.jpg', 'dhash-64-v1', 10, 44, x'02'),\
-             (6, 'no-destination.jpg', 'dhash-64-v1', 10, 44, x'02');\
-             INSERT INTO item_decisions (candidate_id, decision, decided_at, destination_path) VALUES (2, 'imported', '2026-08-02 00:00:00', 'managed/older.jpg'),\
-             (3, 'imported', '2026-08-02 00:00:00', 'managed/same-time-higher-id.jpg'),\
-             (4, 'skipped', '2026-08-04 00:00:00', NULL),\
-             (5, 'imported', '2026-08-03 00:00:00', 'managed/newest.jpg'),\
-             (6, 'imported', '2026-08-05 00:00:00', NULL);",
+             INSERT INTO review_candidates VALUES (1, 'active.jpg', 'dhash-64-v1', 10, 0, x'01'),\
+             (2, 'legacy-8.jpg', 'dhash-64-v1', NULL, 255, x'02'),\
+             (3, 'different-provenance-10.jpg', 'dhash-64-v1', 16, 1023, x'02'),\
+             (4, 'skipped-14.jpg', 'dhash-64-v1', 10, 16383, x'02'),\
+             (5, 'newest-14.jpg', 'dhash-64-v1', 8, 16383, x'02'),\
+             (6, 'no-destination-16.jpg', 'dhash-64-v1', 10, 65535, x'02'),\
+             (7, 'newest-16.jpg', 'dhash-64-v1', 10, 65535, x'02'),\
+             (8, 'newest-17.jpg', 'dhash-64-v1', 10, 131071, x'02'),\
+             (9, 'incompatible.jpg', 'other-hash-v1', 10, 255, x'02'),\
+             (10, 'exact.jpg', 'dhash-64-v1', 10, 255, x'01'),\
+             (11, 'replaced.jpg', 'dhash-64-v1', 10, 255, x'02'),\
+             (12, 'newest-20.jpg', 'dhash-64-v1', 10, 1048575, x'02'),\
+             (13, 'excluded-21.jpg', 'dhash-64-v1', 10, 2097151, x'02');\
+             INSERT INTO item_decisions (candidate_id, decision, decided_at, destination_path, replaced_by_candidate_id) VALUES (2, 'imported', '2026-08-02 00:00:00', 'managed/older.jpg', NULL),\
+             (3, 'imported', '2026-08-02 00:00:00', 'managed/same-time-higher-id.jpg', NULL),\
+             (4, 'skipped', '2026-08-04 00:00:00', NULL, NULL),\
+             (5, 'imported', '2026-08-03 00:00:00', 'managed/newest.jpg', NULL),\
+             (6, 'imported', '2026-08-05 00:00:00', NULL, NULL),\
+             (7, 'imported', '2026-08-04 00:00:00', 'managed/newest-16.jpg', NULL),\
+             (8, 'imported', '2026-08-05 00:00:00', 'managed/newest-17.jpg', NULL),\
+             (9, 'imported', '2026-08-06 00:00:00', 'managed/incompatible.jpg', NULL),\
+             (10, 'imported', '2026-08-07 00:00:00', 'managed/exact.jpg', NULL),\
+             (11, 'imported', '2026-08-08 00:00:00', 'managed/replaced.jpg', 1),\
+             (12, 'imported', '2026-08-09 00:00:00', 'managed/newest-20.jpg', NULL),\
+             (13, 'imported', '2026-08-10 00:00:00', 'managed/excluded-21.jpg', NULL);",
         ).unwrap();
 
-        let matches = similar_match_candidates(&connection, 1, 44).unwrap();
-        assert_eq!(
-            matches
-                .iter()
+        let matching_ids = |threshold| {
+            similar_match_candidates(&connection, 1, 0, threshold)
+                .unwrap()
+                .into_iter()
                 .map(|candidate| candidate.1)
-                .collect::<Vec<_>>(),
-            [5, 2, 3]
-        );
-        assert!(matches.iter().all(|candidate| !candidate.4.is_empty()));
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(matching_ids(8), [2]);
+        assert_eq!(matching_ids(10), [2, 3]);
+        assert_eq!(matching_ids(14), [5, 2, 3]);
+        assert_eq!(matching_ids(20), [12, 8, 7, 5, 2, 3]);
     }
 
     #[test]

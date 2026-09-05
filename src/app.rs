@@ -90,6 +90,18 @@ struct ReviewState {
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SimilarityThreshold {
+    threshold: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SetSimilarityThresholdRequest {
+    threshold: u32,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ReviewItem {
     state: String,
     candidate_id: Option<i64>,
@@ -465,6 +477,7 @@ pub fn App() -> Element {
         message: String::new(),
     });
     let mut review_selected_tags = use_signal(Vec::<String>::new);
+    let mut similarity_threshold = use_signal(|| 10_u32);
     let mut review_tag_draft = use_signal(String::new);
     let mut recent_review_tags = use_signal(Vec::<String>::new);
     let mut selected_similar_match = use_signal(|| None::<SimilarMatch>);
@@ -517,6 +530,25 @@ pub fn App() -> Element {
                 if let Ok(state) = serde_wasm_bindgen::from_value::<ReviewState>(value) {
                     review_state.set(state);
                 }
+            }
+        });
+    });
+
+    use_effect(move || {
+        if step() != "settings" {
+            return;
+        }
+        spawn(async move {
+            match invoke("similarity_threshold", JsValue::NULL).await {
+                Ok(value) => match serde_wasm_bindgen::from_value::<SimilarityThreshold>(value) {
+                    Ok(result) => similarity_threshold.set(result.threshold),
+                    Err(_) => error
+                        .set("The similarity preference returned an unexpected response.".into()),
+                },
+                Err(value) => error.set(command_error(
+                    value,
+                    "Could not load the library similarity preference.",
+                )),
             }
         });
     });
@@ -927,6 +959,32 @@ pub fn App() -> Element {
         }
     };
 
+    let update_similarity_threshold = move |threshold: u32| async move {
+        error.set(String::new());
+        busy.set(true);
+        let result = serde_wasm_bindgen::to_value(&ReviewInvokeArgs {
+            request: SetSimilarityThresholdRequest { threshold },
+        })
+        .map_err(|_| JsValue::NULL)
+        .and_then(Ok);
+        let result = match result {
+            Ok(args) => invoke("set_similarity_threshold", args).await,
+            Err(value) => Err(value),
+        };
+        match result {
+            Ok(value) => match serde_wasm_bindgen::from_value::<SimilarityThreshold>(value) {
+                Ok(result) => similarity_threshold.set(result.threshold),
+                Err(_) => error
+                    .set("The saved similarity preference returned an unexpected response.".into()),
+            },
+            Err(value) => error.set(command_error(
+                value,
+                "Could not save the library similarity preference.",
+            )),
+        }
+        busy.set(false);
+    };
+
     let close_library = move |_| async move {
         error.set(String::new());
         busy.set(true);
@@ -1275,7 +1333,7 @@ pub fn App() -> Element {
                     } else if step() == "home" {
                         div { class: "library-search", "data-testid": "library-search",
                             div { class: "library-search-header", div { p { class: "step-label success-label", "LIBRARY SEARCH" } h2 { "Your managed media" } p { class: "lede", "Browse imported copies. Originals remain untouched." } }
-                                div { class: "library-search-actions", button { class: "primary-button", r#type: "button", onclick: move |_| { error.set(String::new()); step.set("import".into()); }, "Import media" } button { class: "secondary-button", r#type: "button", onclick: close_library, disabled: busy(), if busy() { "Closing…" } else { "Close" } } button { class: "secondary-button", r#type: "button", onclick: move |_| step.set("danger".into()), "Danger zone" } }
+                                div { class: "library-search-actions", button { class: "primary-button", r#type: "button", onclick: move |_| { error.set(String::new()); step.set("import".into()); }, "Import media" } button { class: "secondary-button", r#type: "button", onclick: move |_| { error.set(String::new()); step.set("settings".into()); }, "Library settings" } button { class: "secondary-button", r#type: "button", onclick: close_library, disabled: busy(), if busy() { "Closing…" } else { "Close" } } button { class: "secondary-button", r#type: "button", onclick: move |_| step.set("danger".into()), "Danger zone" } }
                             }
                             div { class: "search-filters",
                                 label { "Date to search" select { value: "{search_date_field}", onchange: move |event| search_date_field.set(event.value()), option { value: "selected", "Selected import date" } option { value: "original", "Original media date" } } }
@@ -1292,6 +1350,25 @@ pub fn App() -> Element {
                             if !search_loading() && search_items().is_empty() { div { class: "library-empty", "data-testid": "library-empty-state", h3 { "No media has been imported yet." } p { "Use Import media to safely review a folder and create managed copies. Originals are never moved or deleted." } button { class: "primary-button", r#type: "button", onclick: move |_| step.set("import".into()), "Import media" } } }
                             if !search_loading() && !search_items().is_empty() { div { class: "media-grid", "data-testid": "library-search-grid", for item in search_items() { article { class: "media-card", div { class: "media-card-preview", if item.preview_state == "available" && item.preview_url.is_some() { if item.media_type == "video" { VideoCardPreview { key: "{item.preview_url.clone().unwrap_or_default()}", preview_url: item.preview_url.clone().unwrap_or_default() } } else { img { src: "{item.preview_url.clone().unwrap_or_default()}", alt: "Preview of {item.filename}" } } } else { p { class: "preview-fallback", "Preview unavailable" } } } div { class: "media-card-details", strong { "{item.filename}" } small { "{item.media_type}" } small { "Selected: " {item.effective_import_date.clone().unwrap_or_else(|| "unavailable".into())} } small { "Original: " {item.original_media_date.clone().unwrap_or_else(|| "not recorded".into())} } if !item.tags.is_empty() { small { "Tags: " {item.tags.join(", ")} } } } } } } }
                         }
+                    } else if step() == "settings" {
+                        p { class: "step-label success-label", "LIBRARY SETTINGS" }
+                        h2 { "Library settings" }
+                        p { class: "lede", "Choose how broadly Photo Handler finds visually similar imported pictures." }
+                        div { class: "folder-summary",
+                            span { "Protected library" }
+                            strong { "{folder}" }
+                        }
+                        div { class: "similarity-settings", role: "radiogroup", "aria-label": "Similarity matching",
+                            strong { "Similar pictures" }
+                            small { "Broader matching can show more related photos." }
+                            for (threshold, label) in [(8_u32, "Strict"), (10, "Balanced"), (14, "Broad"), (20, "Very Broad")] {
+                                label { class: "similarity-preset", "data-selected": "{similarity_threshold() == threshold}",
+                                    input { r#type: "radio", name: "similarity-threshold", checked: similarity_threshold() == threshold, onchange: move |_| update_similarity_threshold(threshold), disabled: busy() }
+                                    span { "{label} ({threshold})" }
+                                }
+                            }
+                        }
+                        button { class: "secondary-button", r#type: "button", onclick: move |_| { error.set(String::new()); step.set("home".into()); }, disabled: busy(), "Back" }
                     } else if step() == "import" {
                         h2 { class: "import-title", "Choose where to import from." }
                         if import_source().state == "ready" {
@@ -1355,7 +1432,7 @@ pub fn App() -> Element {
                                         p { class: "error-message", role: "alert", "{review_item().message}" }
                                     }
                                 }
-                                div { class: "review-details",
+                                    div { class: "review-details",
                                     div { class: "review-context", strong { "{review_item().filename.clone().unwrap_or_default()}" } small { "{review_item().relative_path.clone().unwrap_or_default()}" } }
                                     div { class: "review-metadata", "aria-label": "Media metadata",
                                         strong { "Media details" }
@@ -1658,6 +1735,47 @@ mod review_layout_tests {
             ".comparison-panels { grid-template-columns: 1fr; }",
         ] {
             assert!(STYLES.contains(rule), "missing comparison style: {rule}");
+        }
+    }
+
+    #[test]
+    fn library_settings_exposes_persistent_similarity_presets_without_review_controls() {
+        let source = include_str!("app.rs");
+        for hook in [
+            "step.set(\"settings\".into())",
+            "Library settings",
+            "Protected library",
+            "similarity_threshold",
+            "set_similarity_threshold",
+            "Strict",
+            "Balanced",
+            "Broad",
+            "Very Broad",
+            "role: \"radiogroup\"",
+            "name: \"similarity-threshold\"",
+            "similarity_threshold.set(result.threshold)",
+            "Could not save the library similarity preference.",
+        ] {
+            assert!(
+                source.contains(hook),
+                "missing similarity-preset hook: {hook}"
+            );
+        }
+        let review_source = source
+            .split("} else if step() == \"review\"")
+            .nth(1)
+            .and_then(|branch| branch.split("#[cfg(test)]").next())
+            .expect("review branch must exist");
+        assert!(
+            !review_source.contains("similarity-settings"),
+            "Review must not contain similarity settings controls"
+        );
+        for rule in [
+            ".similarity-settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));",
+            ".similarity-preset[data-selected=\"true\"] {",
+            ".similarity-settings { grid-template-columns: 1fr; }",
+        ] {
+            assert!(STYLES.contains(rule), "missing similarity-preset style: {rule}");
         }
     }
 
