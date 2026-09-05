@@ -333,7 +333,7 @@ The catalogue format is incremented for the replacement relationship and support
 - [x] 1.2 Add recent imported-tag query and register its Tauri command
 - [x] 1.3 Implement the full-window review layout and space-delimited removable tag chips
 - [x] 1.4 Run `cargo test --workspace` for metadata, recent-tag, and UI contract coverage
-- [ ] 1.5 Run `cargo tauri build`
+- [x] 1.5 Run `cargo tauri build`
 
 #### Manual
 
