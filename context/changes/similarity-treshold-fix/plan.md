@@ -132,12 +132,12 @@ The new library setting defaults existing catalogues to Balanced (10). Historic 
 
 #### Automated
 
-- [x] 1.1 Add the encrypted library threshold preference, migration, and validation contract
-- [x] 1.2 Apply the active preset to native similarity matching and register its Tauri commands
-- [x] 1.3 Move accessible Strict, Balanced, Broad, and Very Broad controls into Library Settings
-- [x] 1.4 Run `cargo test --workspace` for preference, compatibility, calibration, and UI contracts
-- [x] 1.5 Run `cargo tauri build --bundles app` without generating a DMG
+- [x] 1.1 Add the encrypted library threshold preference, migration, and validation contract — 0ad93e3
+- [x] 1.2 Apply the active preset to native similarity matching and register its Tauri commands — 0ad93e3
+- [x] 1.3 Move accessible Strict, Balanced, Broad, and Very Broad controls into Library Settings — 0ad93e3
+- [x] 1.4 Run `cargo test --workspace` for preference, compatibility, calibration, and UI contracts — 0ad93e3
+- [x] 1.5 Run `cargo tauri build --bundles app` without generating a DMG — 0ad93e3
 
 #### Manual
 
-- [x] 1.6 Verify Library Settings persistence, classroom-photo recall, review focus, and source preservation
+- [x] 1.6 Verify Library Settings persistence, classroom-photo recall, review focus, and source preservation — 0ad93e3

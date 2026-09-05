@@ -1,7 +1,7 @@
 ---
 change_id: similarity-treshold-fix
 title: Similarity treshold fix
-status: implementing
+status: implemented
 created: 2026-09-05
 updated: 2026-09-05
 archived_at: null
