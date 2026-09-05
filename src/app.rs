@@ -327,7 +327,7 @@ struct SearchLibraryInvokeArgs<'a> {
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct TagSuggestionResult {
+struct ListLibraryTagsResult {
     tags: Vec<String>,
 }
 
@@ -338,13 +338,13 @@ struct RecentTagsResult {
 }
 
 #[derive(Serialize)]
-struct TagSuggestionRequest<'a> {
-    prefix: &'a str,
+struct ListLibraryTagsRequest<'a> {
+    query: Option<&'a str>,
 }
 
 #[derive(Serialize)]
-struct TagSuggestionInvokeArgs<'a> {
-    request: TagSuggestionRequest<'a>,
+struct ListLibraryTagsInvokeArgs<'a> {
+    request: ListLibraryTagsRequest<'a>,
 }
 
 fn command_error(value: JsValue, fallback: &str) -> String {
@@ -496,7 +496,7 @@ pub fn App() -> Element {
     let mut search_media_types = use_signal(|| vec!["image".to_owned(), "video".to_owned()]);
     let mut search_tag_input = use_signal(String::new);
     let mut search_selected_tags = use_signal(Vec::<String>::new);
-    let mut tag_suggestions = use_signal(Vec::<String>::new);
+    let mut library_tag_options = use_signal(Vec::<String>::new);
     let mut search_items = use_signal(Vec::<SearchLibraryItem>::new);
     let mut search_loading = use_signal(|| false);
     let mut search_actions_open = use_signal(|| false);
@@ -622,29 +622,29 @@ pub fn App() -> Element {
     });
 
     use_effect(move || {
-        let prefix = search_tag_input();
-        if prefix.chars().count() < 2 {
-            tag_suggestions.set(Vec::new());
+        if step() != "home" || !search_tags_expanded() {
             return;
         }
+        let query = search_tag_input();
         spawn(async move {
-            let request = TagSuggestionInvokeArgs {
-                request: TagSuggestionRequest { prefix: &prefix },
+            let request = ListLibraryTagsInvokeArgs {
+                request: ListLibraryTagsRequest {
+                    query: (!query.trim().is_empty()).then_some(query.as_str()),
+                },
             };
             match serde_wasm_bindgen::to_value(&request) {
-                Ok(args) => match invoke("suggest_library_tags", args).await {
-                    Ok(value) => match serde_wasm_bindgen::from_value::<TagSuggestionResult>(value)
-                    {
-                        Ok(result) => tag_suggestions.set(result.tags),
-                        Err(_) => {
-                            error.set("Tag suggestions returned an unexpected response.".into())
+                Ok(args) => match invoke("list_library_tags", args).await {
+                    Ok(value) => {
+                        match serde_wasm_bindgen::from_value::<ListLibraryTagsResult>(value) {
+                            Ok(result) => library_tag_options.set(result.tags),
+                            Err(_) => {
+                                error.set("The tag list returned an unexpected response.".into())
+                            }
                         }
-                    },
-                    Err(value) => {
-                        error.set(command_error(value, "Could not load tag suggestions."))
                     }
+                    Err(value) => error.set(command_error(value, "Could not load library tags.")),
                 },
-                Err(_) => error.set("Could not prepare tag suggestions.".into()),
+                Err(_) => error.set("Could not prepare the tag list.".into()),
             }
         });
     });
@@ -1393,7 +1393,7 @@ pub fn App() -> Element {
                                             for tag in search_selected_tags() {
                                                 button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_selected_tags.with_mut(|tags| tags.retain(|selected| selected != &tag)), "{tag} ×" }
                                             }
-                                            button { class: "clear-filters-button", r#type: "button", onclick: move |_| { search_imported_start_date.set(String::new()); search_imported_end_date.set(String::new()); search_captured_start_date.set(String::new()); search_captured_end_date.set(String::new()); search_media_types.set(vec!["image".into(), "video".into()]); search_tag_input.set(String::new()); search_selected_tags.set(Vec::new()); tag_suggestions.set(Vec::new()); }, "Clear all" }
+                                            button { class: "clear-filters-button", r#type: "button", onclick: move |_| { search_imported_start_date.set(String::new()); search_imported_end_date.set(String::new()); search_captured_start_date.set(String::new()); search_captured_end_date.set(String::new()); search_media_types.set(vec!["image".into(), "video".into()]); search_tag_input.set(String::new()); search_selected_tags.set(Vec::new()); }, "Clear all" }
                                         }
                                     }
                                     if !search_captured_start_date().is_empty() || !search_captured_end_date().is_empty() { p { class: "privacy-note", "Captured dates are available only for imports made after this feature was added. Earlier imports remain searchable by imported date." } }
@@ -1445,9 +1445,8 @@ pub fn App() -> Element {
                                     }
                                     section { class: "filter-section",
                                         button { class: "filter-disclosure", r#type: "button", "aria-expanded": "{search_tags_expanded}", onclick: move |_| search_tags_expanded.set(!search_tags_expanded()), span { "Tags" } span { if search_tags_expanded() { "−" } else { "+" } } }
-                                        if search_tags_expanded() { div { class: "filter-section-content tag-filter", label { "Tags" input { value: "{search_tag_input}", oninput: move |event| search_tag_input.set(event.value()), placeholder: "Type at least two characters", "aria-describedby": "tag-suggestion-help" } } small { id: "tag-suggestion-help", "Suggestions include imported media only." }
-                                            if !tag_suggestions().is_empty() { div { class: "tag-suggestions", role: "listbox", for suggestion in tag_suggestions() { button { class: "tag-suggestion", r#type: "button", role: "option", onclick: move |_| { let suggestion = suggestion.clone(); search_selected_tags.with_mut(|tags| { if !tags.contains(&suggestion) { tags.push(suggestion); tags.sort(); } }); search_tag_input.set(String::new()); tag_suggestions.set(Vec::new()); }, "{suggestion}" } } } }
-                                            if !search_selected_tags().is_empty() { div { class: "selected-tags", "aria-label": "Selected tags", for tag in search_selected_tags() { button { class: "tag-chip", r#type: "button", onclick: move |_| search_selected_tags.with_mut(|tags| tags.retain(|selected| selected != &tag)), "{tag} ×" } } } }
+                                        if search_tags_expanded() { div { class: "filter-section-content tag-filter", label { "Search tags" input { value: "{search_tag_input}", oninput: move |event| search_tag_input.set(event.value()), placeholder: "Search imported tags", "aria-describedby": "tag-list-help" } } small { id: "tag-list-help", "Top tags and search results include imported media only." }
+                                            div { class: "tag-options", role: "group", "aria-label": "Imported tags", for tag in library_tag_options() { button { class: "tag-option", r#type: "button", "aria-pressed": "{search_selected_tags().contains(&tag)}", onclick: move |_| { let tag = tag.clone(); search_selected_tags.with_mut(|tags| { if tags.contains(&tag) { tags.retain(|selected| selected != &tag); } else { tags.push(tag); tags.sort(); } }); }, "{tag}" } } }
                                         } }
                                     }
                                 }
@@ -1896,7 +1895,7 @@ mod review_layout_tests {
     fn library_search_uses_workspace_menu_and_applied_filter_hooks() {
         let source = include_str!("app.rs");
         for hook in [
-            "suggest_library_tags",
+            "list_library_tags",
             "imported_start_date",
             "imported_end_date",
             "captured_start_date",
@@ -1913,8 +1912,11 @@ mod review_layout_tests {
             "No media types selected.",
             "Media: Images ×",
             "Media: Videos ×",
-            "tag-suggestions",
-            "selected-tags",
+            "library_tag_options",
+            "tag-options",
+            "tag-option",
+            "Search imported tags",
+            "Top tags and search results include imported media only.",
             "Captured dates are available only for imports made after this feature was added",
             "library-search-workspace",
             "filter-sidebar",
@@ -1955,6 +1957,8 @@ mod review_layout_tests {
             ".media-type-options { gap:",
             ".filter-section-content label.media-type-option { display: flex;",
             ".filter-section-content input[type=\"checkbox\"] { width: 1rem;",
+            ".tag-options { display: flex; flex-wrap: wrap; gap: .35rem;",
+            ".tag-option:hover, .tag-option:focus-visible, .tag-option[aria-pressed=\"true\"]",
             ".filter-disclosure:focus-visible,",
             ".library-search-workspace { grid-template-columns: 1fr; }",
         ] {

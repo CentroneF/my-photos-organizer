@@ -72,13 +72,14 @@ pub struct SearchLibraryItem {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TagSuggestionRequest {
-    pub prefix: String,
+pub struct ListLibraryTagsRequest {
+    #[serde(default)]
+    pub query: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TagSuggestionResult {
+pub struct ListLibraryTagsResult {
     pub tags: Vec<String>,
 }
 
@@ -230,23 +231,26 @@ fn query_imported_items(
     .collect()
 }
 
-pub fn suggest_library_tags(
-    request: TagSuggestionRequest,
-) -> Result<TagSuggestionResult, SearchError> {
-    let prefix = normalize_tag(&request.prefix);
-    if prefix.chars().count() < 2 {
-        return Ok(TagSuggestionResult { tags: vec![] });
-    }
+pub fn list_library_tags(
+    request: ListLibraryTagsRequest,
+) -> Result<ListLibraryTagsResult, SearchError> {
+    let query = request
+        .query
+        .as_deref()
+        .map(normalize_tag)
+        .unwrap_or_default();
     let tags = library::with_catalogue(|connection, _| {
-        let mut statement = connection.prepare("SELECT DISTINCT t.normalized_name FROM tags t JOIN candidate_tags ct ON ct.tag_id = t.id JOIN item_decisions d ON d.candidate_id = ct.candidate_id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND d.replaced_by_candidate_id IS NULL AND t.normalized_name LIKE ?1 ESCAPE '\\' ORDER BY t.normalized_name LIMIT 12").map_err(database_error)?;
+        let mut statement = connection.prepare("SELECT t.normalized_name, COUNT(*) AS frequency FROM tags t JOIN candidate_tags ct ON ct.tag_id = t.id JOIN item_decisions d ON d.candidate_id = ct.candidate_id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND d.replaced_by_candidate_id IS NULL AND (?1 = '' OR t.normalized_name LIKE ?2 ESCAPE '\\') GROUP BY t.id, t.normalized_name ORDER BY frequency DESC, t.normalized_name ASC LIMIT 10").map_err(database_error)?;
         let results = statement
-            .query_map([format!("{}%", escape_like(&prefix))], |row| row.get(0))
+            .query_map([&query, &format!("%{}%", escape_like(&query))], |row| {
+                row.get(0)
+            })
             .map_err(database_error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(database_error)?;
         Ok::<_, SearchError>(results)
     })?;
-    Ok(TagSuggestionResult { tags })
+    Ok(ListLibraryTagsResult { tags })
 }
 
 pub fn recent_library_tags() -> Result<RecentTagsResult, SearchError> {
@@ -461,21 +465,15 @@ mod tests {
         .unwrap();
         assert!(null_captured_items.is_empty());
         assert_eq!(
-            suggest_library_tags(TagSuggestionRequest {
-                prefix: "su".into()
+            list_library_tags(ListLibraryTagsRequest {
+                query: Some("mm".into())
             })
             .unwrap()
             .tags,
             ["summer"]
         );
-        assert!(
-            suggest_library_tags(TagSuggestionRequest { prefix: "s".into() })
-                .unwrap()
-                .tags
-                .is_empty()
-        );
-        assert!(suggest_library_tags(TagSuggestionRequest {
-            prefix: "sk".into()
+        assert!(list_library_tags(ListLibraryTagsRequest {
+            query: Some("sk".into())
         })
         .unwrap()
         .tags
@@ -485,6 +483,83 @@ mod tests {
             ["family", "summer"],
             "recent review tags are imported-only and deterministically ordered"
         );
+        library::lock_library();
+    }
+
+    #[test]
+    fn library_tag_list_ranks_literal_substrings_from_active_imports_only() {
+        let _session_guard = library::test_session_guard();
+        let directory = tempdir().unwrap();
+        library::setup_library(library::SetupLibraryRequest {
+            folder_path: directory.path().display().to_string(),
+            password: "correct horse battery staple".into(),
+            password_confirmation: "correct horse battery staple".into(),
+            recovery_question: "pet".into(),
+            recovery_answer: "Mochi".into(),
+        })
+        .unwrap();
+        library::with_catalogue(|connection, _| {
+            connection.execute_batch("INSERT INTO review_sessions (id, source_path, state) VALUES (1, 'source', 'complete');
+                INSERT INTO review_candidates (id, session_id, relative_path, file_size, modified_at, media_type, decision) VALUES
+                (1,1,'1.jpg',1,0,'image','imported'),(2,1,'2.jpg',1,0,'image','imported'),(3,1,'3.jpg',1,0,'image','imported'),(4,1,'4.jpg',1,0,'image','imported'),(5,1,'5.jpg',1,0,'image','imported'),(6,1,'6.jpg',1,0,'image','imported'),(7,1,'7.jpg',1,0,'image','imported'),(8,1,'8.jpg',1,0,'image','imported'),(9,1,'9.jpg',1,0,'image','imported'),(10,1,'10.jpg',1,0,'image','imported'),(11,1,'11.jpg',1,0,'image','imported'),(12,1,'12.jpg',1,0,'image','imported'),(13,1,'13.jpg',1,0,'image','imported'),(14,1,'14.jpg',1,0,'image','skipped'),(15,1,'15.jpg',1,0,'image','imported');
+                INSERT INTO item_decisions (candidate_id, decision, destination_path, effective_import_date, replaced_by_candidate_id) VALUES
+                (1,'imported','1.jpg','2026-08-20',NULL),(2,'imported','2.jpg','2026-08-20',NULL),(3,'imported','3.jpg','2026-08-20',NULL),(4,'imported','4.jpg','2026-08-20',NULL),(5,'imported','5.jpg','2026-08-20',NULL),(6,'imported','6.jpg','2026-08-20',NULL),(7,'imported','7.jpg','2026-08-20',NULL),(8,'imported','8.jpg','2026-08-20',NULL),(9,'imported','9.jpg','2026-08-20',NULL),(10,'imported','10.jpg','2026-08-20',NULL),(11,'imported','11.jpg','2026-08-20',NULL),(12,'imported','12.jpg','2026-08-20',NULL),(13,'imported','13.jpg','2026-08-20',NULL),(14,'skipped',NULL,'2026-08-20',NULL),(15,'imported','15.jpg','2026-08-20',1);
+                INSERT INTO tags (id, normalized_name) VALUES (1,'alpha'),(2,'beta'),(3,'middle tag'),(4,'percent%tag'),(5,'under_tag'),(6,'tag-a'),(7,'tag-b'),(8,'tag-c'),(9,'tag-d'),(10,'tag-e'),(11,'tag-f'),(12,'skipped-only'),(13,'replaced-only');
+                INSERT INTO candidate_tags (candidate_id, tag_id) VALUES (1,1),(2,1),(3,1),(4,2),(5,2),(6,2),(7,3),(8,4),(9,5),(10,6),(11,7),(12,8),(13,9),(1,10),(2,11),(14,12),(15,13);").map_err(database_error)?;
+            Ok::<(), SearchError>(())
+        }).unwrap();
+
+        assert_eq!(
+            list_library_tags(ListLibraryTagsRequest { query: None })
+                .unwrap()
+                .tags,
+            [
+                "alpha",
+                "beta",
+                "middle tag",
+                "percent%tag",
+                "tag-a",
+                "tag-b",
+                "tag-c",
+                "tag-d",
+                "tag-e",
+                "tag-f"
+            ],
+            "blank queries return the ten most-used tags, with alphabetical ties"
+        );
+        assert_eq!(
+            list_library_tags(ListLibraryTagsRequest {
+                query: Some("  DDLE  ".into())
+            })
+            .unwrap()
+            .tags,
+            ["middle tag"],
+            "queries are whitespace-normalized, case-normalized, and substring-based"
+        );
+        assert_eq!(
+            list_library_tags(ListLibraryTagsRequest {
+                query: Some("%".into())
+            })
+            .unwrap()
+            .tags,
+            ["percent%tag"],
+            "percent is matched literally"
+        );
+        assert_eq!(
+            list_library_tags(ListLibraryTagsRequest {
+                query: Some("_".into())
+            })
+            .unwrap()
+            .tags,
+            ["under_tag"],
+            "underscore is matched literally"
+        );
+        assert!(list_library_tags(ListLibraryTagsRequest {
+            query: Some("only".into())
+        })
+        .unwrap()
+        .tags
+        .is_empty());
         library::lock_library();
     }
 

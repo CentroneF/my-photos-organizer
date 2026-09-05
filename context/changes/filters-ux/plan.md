@@ -308,22 +308,22 @@ No catalogue migration is expected: imported/captured dates and media types alre
 
 #### Automated
 
-- [x] 3.1 Add multi-type native search semantics and encrypted-catalogue coverage
-- [x] 3.2 Replace the media selector with checkbox controls, applied-filter behavior, responsive styles, and source coverage
-- [x] 3.3 Run `cargo test --workspace` and `cargo check --workspace`
+- [x] 3.1 Add multi-type native search semantics and encrypted-catalogue coverage — eba1e23
+- [x] 3.2 Replace the media selector with checkbox controls, applied-filter behavior, responsive styles, and source coverage — eba1e23
+- [x] 3.3 Run `cargo test --workspace` and `cargo check --workspace` — eba1e23
 
 #### Manual
 
-- [x] 3.4 Verify image/video toggles, explicit no-results behavior, Clear all, and chip removal
+- [x] 3.4 Verify image/video toggles, explicit no-results behavior, Clear all, and chip removal — eba1e23
 
 ### Phase 4: Frequency-ranked tag discovery
 
 #### Automated
 
-- [ ] 4.1 Add and register the imported-only frequency-ranked tag-list command with literal substring coverage
-- [ ] 4.2 Replace suggestion UI with searchable, toggleable top-ten tag controls and applied-filter integration
-- [ ] 4.3 Run `cargo test --workspace` and `cargo check --workspace`
+- [x] 4.1 Add and register the imported-only frequency-ranked tag-list command with literal substring coverage
+- [x] 4.2 Replace suggestion UI with searchable, toggleable top-ten tag controls and applied-filter integration
+- [x] 4.3 Run `cargo test --workspace` and `cargo check --workspace`
 
 #### Manual
 
-- [ ] 4.4 Verify top-ten ranking, substring discovery, tag toggling, and combined-filter AND behavior
+- [x] 4.4 Verify top-ten ranking, substring discovery, tag toggling, and combined-filter AND behavior

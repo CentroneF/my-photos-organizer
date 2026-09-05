@@ -63,10 +63,10 @@ fn search_library(
 }
 
 #[tauri::command]
-fn suggest_library_tags(
-    request: search::TagSuggestionRequest,
-) -> Result<search::TagSuggestionResult, search::SearchError> {
-    search::suggest_library_tags(request)
+fn list_library_tags(
+    request: search::ListLibraryTagsRequest,
+) -> Result<search::ListLibraryTagsResult, search::SearchError> {
+    search::list_library_tags(request)
 }
 
 #[tauri::command]
@@ -272,7 +272,7 @@ pub fn run() {
             import_review_item,
             substitute_review_item,
             search_library,
-            suggest_library_tags,
+            list_library_tags,
             recent_library_tags,
             lock_library,
             open_library_folder,
