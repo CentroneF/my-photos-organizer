@@ -13,7 +13,7 @@ Review uses a fixed threshold of 10 and persists it on each dHash record. The ma
 
 ## Desired End State
 
-An unlocked library remembers its selected preset and reviewers can change it directly in the review workspace. Existing compatible `dhash-64-v1` imports are considered immediately at the new threshold, without re-importing or re-hashing media.
+An unlocked library remembers its selected preset and owners can change it in a dedicated Library Settings screen reached from the library list. The screen also shows the protected-library path. Existing compatible `dhash-64-v1` imports are considered immediately at the new threshold, without re-importing or re-hashing media.
 
 ## Key Decisions Made
 
@@ -26,13 +26,13 @@ An unlocked library remembers its selected preset and reviewers can change it di
 
 ## Scope
 
-**In scope:** encrypted preference storage; migration; native commands; review preset controls; compatible legacy matching; calibration and UI tests.
+**In scope:** encrypted preference storage; migration; native commands; Library Settings screen with protected path and presets; compatible legacy matching; calibration and UI tests.
 
 **Out of scope:** arbitrary numeric thresholds, rehash/backfill, pending/skipped/HEIC/video visual comparison, source-media mutation, and raw distance display.
 
 ## Architecture / Approach
 
-The encrypted catalogue owns the selected threshold. Native review matching reads it at comparison time and compares eligible `dhash-64-v1` values without requiring their historical threshold to match. Dioxus reads and updates the setting through narrow Tauri commands and refreshes the current item’s comparison context.
+The encrypted catalogue owns the selected threshold. Native review matching reads it when loading the next item and compares eligible `dhash-64-v1` values without requiring their historical threshold to match. Dioxus reads and updates the setting through narrow Tauri commands on the dedicated Library Settings screen; Review remains free of preference controls.
 
 ## Phases at a Glance
 
