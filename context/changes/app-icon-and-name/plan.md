@@ -199,24 +199,24 @@ This change intentionally has no migration. The new identifier creates a separat
 
 #### Automated
 
-- [x] 2.1 Regenerate the complete Tauri icon family from the committed master artwork.
-- [x] 2.2 Validate core generated icon file formats.
-- [x] 2.3 Run `cargo tauri build --bundles app` without creating a DMG.
+- [x] 2.1 Regenerate the complete Tauri icon family from the committed master artwork. — 0a39871
+- [x] 2.2 Validate core generated icon file formats. — 0a39871
+- [x] 2.3 Run `cargo tauri build --bundles app` without creating a DMG. — 0a39871
 
 #### Manual
 
-- [x] 2.4 Verify the new icon is recognizable and transparent at desktop sizes.
-- [x] 2.5 Verify macOS and Windows asset sets use the same custom identity.
+- [x] 2.4 Verify the new icon is recognizable and transparent at desktop sizes. — 0a39871
+- [x] 2.5 Verify macOS and Windows asset sets use the same custom identity. — 0a39871
 
 ### Phase 3: Verify the renamed first-run desktop experience
 
 #### Automated
 
-- [ ] 3.1 Run `cargo test --workspace` after all changes.
-- [ ] 3.2 Run `cargo check --workspace` after all changes.
+- [x] 3.1 Run `cargo test --workspace` after all changes.
+- [x] 3.2 Run `cargo check --workspace` after all changes.
 
 #### Manual
 
-- [ ] 3.3 Verify a clean first run under the new identifier.
-- [ ] 3.4 Verify an existing protected library can be explicitly selected and unlocked without media changes.
-- [ ] 3.5 Verify consistent Photo Organizer branding and icon in the desktop experience.
+- [x] 3.3 Verify a clean first run under the new identifier.
+- [x] 3.4 Verify an existing protected library can be explicitly selected and unlocked without media changes.
+- [x] 3.5 Verify consistent Photo Organizer branding and icon in the desktop experience.
