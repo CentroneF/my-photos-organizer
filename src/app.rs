@@ -313,9 +313,10 @@ struct SearchLibraryItem {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SearchLibraryRequest<'a> {
-    date_field: &'a str,
-    start_date: Option<&'a str>,
-    end_date: Option<&'a str>,
+    imported_start_date: Option<&'a str>,
+    imported_end_date: Option<&'a str>,
+    captured_start_date: Option<&'a str>,
+    captured_end_date: Option<&'a str>,
     media_type: Option<&'a str>,
     tags: &'a [String],
 }
@@ -488,9 +489,10 @@ pub fn App() -> Element {
     let mut new_password = use_signal(String::new);
     let mut new_confirmation = use_signal(String::new);
     let mut clean_password = use_signal(String::new);
-    let mut search_start_date = use_signal(String::new);
-    let mut search_end_date = use_signal(String::new);
-    let mut search_date_field = use_signal(|| "selected".to_owned());
+    let mut search_imported_start_date = use_signal(String::new);
+    let mut search_imported_end_date = use_signal(String::new);
+    let mut search_captured_start_date = use_signal(String::new);
+    let mut search_captured_end_date = use_signal(String::new);
     let mut search_media_type = use_signal(String::new);
     let mut search_tag_input = use_signal(String::new);
     let mut search_selected_tags = use_signal(Vec::<String>::new);
@@ -579,18 +581,22 @@ pub fn App() -> Element {
         if step() != "home" {
             return;
         }
-        let start = search_start_date();
-        let end = search_end_date();
-        let date_field = search_date_field();
+        let imported_start = search_imported_start_date();
+        let imported_end = search_imported_end_date();
+        let captured_start = search_captured_start_date();
+        let captured_end = search_captured_end_date();
         let media = search_media_type();
         let tags = search_selected_tags();
         spawn(async move {
             search_loading.set(true);
             let request = SearchLibraryInvokeArgs {
                 request: SearchLibraryRequest {
-                    date_field: &date_field,
-                    start_date: (!start.is_empty()).then_some(start.as_str()),
-                    end_date: (!end.is_empty()).then_some(end.as_str()),
+                    imported_start_date: (!imported_start.is_empty())
+                        .then_some(imported_start.as_str()),
+                    imported_end_date: (!imported_end.is_empty()).then_some(imported_end.as_str()),
+                    captured_start_date: (!captured_start.is_empty())
+                        .then_some(captured_start.as_str()),
+                    captured_end_date: (!captured_end.is_empty()).then_some(captured_end.as_str()),
                     media_type: (!media.is_empty()).then_some(media.as_str()),
                     tags: &tags,
                 },
@@ -1360,17 +1366,20 @@ pub fn App() -> Element {
                             }
                             div { class: "library-search-workspace",
                                 main { class: "library-results",
-                                    if search_date_field() != "selected" || !search_start_date().is_empty() || !search_end_date().is_empty() || !search_media_type().is_empty() || !search_selected_tags().is_empty() {
+                                    if !search_imported_start_date().is_empty() || !search_imported_end_date().is_empty() || !search_captured_start_date().is_empty() || !search_captured_end_date().is_empty() || !search_media_type().is_empty() || !search_selected_tags().is_empty() {
                                         div { class: "applied-filter-bar", "aria-label": "Applied filters",
                                             strong { "Applied filters" }
-                                            if search_date_field() == "original" {
-                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_date_field.set("selected".into()), "Original media date ×" }
+                                            if !search_imported_start_date().is_empty() {
+                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_imported_start_date.set(String::new()), "Imported from: {search_imported_start_date} ×" }
                                             }
-                                            if !search_start_date().is_empty() {
-                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_start_date.set(String::new()), "From: {search_start_date} ×" }
+                                            if !search_imported_end_date().is_empty() {
+                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_imported_end_date.set(String::new()), "Imported to: {search_imported_end_date} ×" }
                                             }
-                                            if !search_end_date().is_empty() {
-                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_end_date.set(String::new()), "To: {search_end_date} ×" }
+                                            if !search_captured_start_date().is_empty() {
+                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_captured_start_date.set(String::new()), "Captured from: {search_captured_start_date} ×" }
+                                            }
+                                            if !search_captured_end_date().is_empty() {
+                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_captured_end_date.set(String::new()), "Captured to: {search_captured_end_date} ×" }
                                             }
                                             if !search_media_type().is_empty() {
                                                 button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_media_type.set(String::new()), "Media: {search_media_type} ×" }
@@ -1378,10 +1387,10 @@ pub fn App() -> Element {
                                             for tag in search_selected_tags() {
                                                 button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_selected_tags.with_mut(|tags| tags.retain(|selected| selected != &tag)), "{tag} ×" }
                                             }
-                                            button { class: "clear-filters-button", r#type: "button", onclick: move |_| { search_date_field.set("selected".into()); search_start_date.set(String::new()); search_end_date.set(String::new()); search_media_type.set(String::new()); search_tag_input.set(String::new()); search_selected_tags.set(Vec::new()); tag_suggestions.set(Vec::new()); }, "Clear all" }
+                                            button { class: "clear-filters-button", r#type: "button", onclick: move |_| { search_imported_start_date.set(String::new()); search_imported_end_date.set(String::new()); search_captured_start_date.set(String::new()); search_captured_end_date.set(String::new()); search_media_type.set(String::new()); search_tag_input.set(String::new()); search_selected_tags.set(Vec::new()); tag_suggestions.set(Vec::new()); }, "Clear all" }
                                         }
                                     }
-                                    if search_date_field() == "original" { p { class: "privacy-note", "Original dates are available only for imports made after this feature was added. Earlier imports remain searchable by selected import date." } }
+                                    if !search_captured_start_date().is_empty() || !search_captured_end_date().is_empty() { p { class: "privacy-note", "Captured dates are available only for imports made after this feature was added. Earlier imports remain searchable by imported date." } }
                                     if search_loading() { p { class: "privacy-note", "Loading imported media…" } }
                                     if !search_loading() && search_items().is_empty() { div { class: "library-empty", "data-testid": "library-empty-state", h3 { "No media has been imported yet." } p { "Use Import media to safely review a folder and create managed copies. Originals are never moved or deleted." } button { class: "primary-button", r#type: "button", onclick: move |_| step.set("import".into()), "Import media" } } }
                                     if !search_loading() && !search_items().is_empty() { div { class: "media-grid", "data-testid": "library-search-grid", for item in search_items() { article { class: "media-card", div { class: "media-card-preview", if item.preview_state == "available" && item.preview_url.is_some() { if item.media_type == "video" { VideoCardPreview { key: "{item.preview_url.clone().unwrap_or_default()}", preview_url: item.preview_url.clone().unwrap_or_default() } } else { img { src: "{item.preview_url.clone().unwrap_or_default()}", alt: "Preview of {item.filename}" } } } else { p { class: "preview-fallback", "Preview unavailable" } } } div { class: "media-card-details", strong { "{item.filename}" } small { "{item.media_type}" } small { "Selected: " {item.effective_import_date.clone().unwrap_or_else(|| "unavailable".into())} } small { "Original: " {item.original_media_date.clone().unwrap_or_else(|| "not recorded".into())} } if !item.tags.is_empty() { small { "Tags: " {item.tags.join(", ")} } } } } } } }
@@ -1389,7 +1398,7 @@ pub fn App() -> Element {
                                 aside { class: "filter-sidebar", "aria-label": "Library filters",
                                     section { class: "filter-section",
                                         button { class: "filter-disclosure", r#type: "button", "aria-expanded": "{search_dates_expanded}", onclick: move |_| search_dates_expanded.set(!search_dates_expanded()), span { "Date" } span { if search_dates_expanded() { "−" } else { "+" } } }
-                                        if search_dates_expanded() { div { class: "filter-section-content", label { "Date to search" select { value: "{search_date_field}", onchange: move |event| search_date_field.set(event.value()), option { value: "selected", "Selected import date" } option { value: "original", "Original media date" } } } label { "From" input { r#type: "date", value: "{search_start_date}", oninput: move |event| search_start_date.set(event.value()) } } label { "To" input { r#type: "date", value: "{search_end_date}", oninput: move |event| search_end_date.set(event.value()) } } } }
+                                        if search_dates_expanded() { div { class: "filter-section-content", strong { "Imported date" } div { class: "date-range-inputs", label { "From" input { r#type: "date", value: "{search_imported_start_date}", oninput: move |event| search_imported_start_date.set(event.value()) } } label { "To" input { r#type: "date", value: "{search_imported_end_date}", oninput: move |event| search_imported_end_date.set(event.value()) } } } strong { "Captured date" } div { class: "date-range-inputs", label { "From" input { r#type: "date", value: "{search_captured_start_date}", oninput: move |event| search_captured_start_date.set(event.value()) } } label { "To" input { r#type: "date", value: "{search_captured_end_date}", oninput: move |event| search_captured_end_date.set(event.value()) } } } } }
                                     }
                                     section { class: "filter-section",
                                         button { class: "filter-disclosure", r#type: "button", "aria-expanded": "{search_media_expanded}", onclick: move |_| search_media_expanded.set(!search_media_expanded()), span { "Media type" } span { if search_media_expanded() { "−" } else { "+" } } }
@@ -1849,11 +1858,17 @@ mod review_layout_tests {
         let source = include_str!("app.rs");
         for hook in [
             "suggest_library_tags",
-            "Selected import date",
-            "Original media date",
+            "imported_start_date",
+            "imported_end_date",
+            "captured_start_date",
+            "captured_end_date",
+            "Imported date",
+            "Captured date",
+            "Imported from:",
+            "Captured from:",
             "tag-suggestions",
             "selected-tags",
-            "Original dates are available only for imports made after this feature was added",
+            "Captured dates are available only for imports made after this feature was added",
             "library-search-workspace",
             "filter-sidebar",
             "filter-disclosure",
@@ -1877,6 +1892,7 @@ mod review_layout_tests {
         for removed_text in [
             "LIBRARY SEARCH",
             "Browse imported copies. Originals remain untouched.",
+            "Date to search",
         ] {
             assert!(
                 !home_source.contains(removed_text),

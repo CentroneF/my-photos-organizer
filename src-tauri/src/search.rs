@@ -11,30 +11,13 @@ use crate::library::{self, SetupLibraryError};
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchLibraryRequest {
-    #[serde(default)]
-    pub date_field: DateField,
-    pub start_date: Option<String>,
-    pub end_date: Option<String>,
+    pub imported_start_date: Option<String>,
+    pub imported_end_date: Option<String>,
+    pub captured_start_date: Option<String>,
+    pub captured_end_date: Option<String>,
     pub media_type: Option<MediaType>,
     #[serde(default)]
     pub tags: Vec<String>,
-}
-
-#[derive(Debug, Deserialize, Clone, Copy, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum DateField {
-    #[default]
-    Selected,
-    Original,
-}
-
-impl DateField {
-    fn column(self) -> &'static str {
-        match self {
-            Self::Selected => "d.effective_import_date",
-            Self::Original => "d.original_media_date",
-        }
-    }
 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
@@ -118,23 +101,22 @@ pub fn search_library(
     app: tauri::AppHandle,
     request: SearchLibraryRequest,
 ) -> Result<SearchLibraryResult, SearchError> {
-    let start_date = validate_date(request.start_date.as_deref())?;
-    let end_date = validate_date(request.end_date.as_deref())?;
-    if start_date.as_deref() > end_date.as_deref() {
-        return Err(error(
-            "invalid_date_range",
-            "The start date must be on or before the end date.",
-        ));
-    }
+    let imported_start_date = validate_date(request.imported_start_date.as_deref())?;
+    let imported_end_date = validate_date(request.imported_end_date.as_deref())?;
+    validate_date_range(imported_start_date.as_deref(), imported_end_date.as_deref())?;
+    let captured_start_date = validate_date(request.captured_start_date.as_deref())?;
+    let captured_end_date = validate_date(request.captured_end_date.as_deref())?;
+    validate_date_range(captured_start_date.as_deref(), captured_end_date.as_deref())?;
     let media_type = request.media_type.map(MediaType::as_str);
     let tags = normalize_tags(&request.tags);
     let items = library::with_catalogue(|connection, root| {
         query_imported_items(
             connection,
-            start_date.as_deref(),
-            end_date.as_deref(),
+            imported_start_date.as_deref(),
+            imported_end_date.as_deref(),
+            captured_start_date.as_deref(),
+            captured_end_date.as_deref(),
             media_type,
-            request.date_field,
             &tags,
         )
         .map(|items| (items, root.to_path_buf()))
@@ -167,22 +149,24 @@ pub fn search_library(
 
 fn query_imported_items(
     connection: &Connection,
-    start: Option<&str>,
-    end: Option<&str>,
+    imported_start: Option<&str>,
+    imported_end: Option<&str>,
+    captured_start: Option<&str>,
+    captured_end: Option<&str>,
     media_type: Option<&str>,
-    date_field: DateField,
     tags: &[String],
 ) -> Result<Vec<CatalogueItem>, SearchError> {
-    let date_column = date_field.column();
-    let mut sql = format!("SELECT d.candidate_id, d.destination_path, c.media_type, d.effective_import_date, d.original_media_date FROM item_decisions d JOIN review_candidates c ON c.id = d.candidate_id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND d.replaced_by_candidate_id IS NULL AND (?1 IS NULL OR {date_column} >= ?1) AND (?2 IS NULL OR {date_column} <= ?2) AND (?3 IS NULL OR c.media_type = ?3)");
+    let mut sql = "SELECT d.candidate_id, d.destination_path, c.media_type, d.effective_import_date, d.original_media_date FROM item_decisions d JOIN review_candidates c ON c.id = d.candidate_id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND d.replaced_by_candidate_id IS NULL AND (?1 IS NULL OR d.effective_import_date >= ?1) AND (?2 IS NULL OR d.effective_import_date <= ?2) AND (?3 IS NULL OR d.original_media_date >= ?3) AND (?4 IS NULL OR d.original_media_date <= ?4) AND (?5 IS NULL OR c.media_type = ?5)".to_owned();
     for index in 0..tags.len() {
-        sql.push_str(&format!(" AND EXISTS (SELECT 1 FROM candidate_tags ct JOIN tags t ON t.id = ct.tag_id WHERE ct.candidate_id = d.candidate_id AND t.normalized_name = ?{})", index + 4));
+        sql.push_str(&format!(" AND EXISTS (SELECT 1 FROM candidate_tags ct JOIN tags t ON t.id = ct.tag_id WHERE ct.candidate_id = d.candidate_id AND t.normalized_name = ?{})", index + 6));
     }
-    sql.push_str(&format!(" ORDER BY {date_column} DESC, d.candidate_id ASC"));
+    sql.push_str(" ORDER BY d.effective_import_date DESC, d.candidate_id ASC");
     let mut statement = connection.prepare(&sql).map_err(database_error)?;
     let mut values = vec![
-        start.map(str::to_owned).into(),
-        end.map(str::to_owned).into(),
+        imported_start.map(str::to_owned).into(),
+        imported_end.map(str::to_owned).into(),
+        captured_start.map(str::to_owned).into(),
+        captured_end.map(str::to_owned).into(),
         media_type.map(str::to_owned).into(),
     ];
     values.extend(tags.iter().cloned().map(Value::from));
@@ -342,6 +326,16 @@ fn validate_date(value: Option<&str>) -> Result<Option<String>, SearchError> {
         })
         .transpose()
 }
+
+fn validate_date_range(start: Option<&str>, end: Option<&str>) -> Result<(), SearchError> {
+    if start > end {
+        return Err(error(
+            "invalid_date_range",
+            "The start date must be on or before the end date.",
+        ));
+    }
+    Ok(())
+}
 fn error(code: &'static str, message: impl Into<String>) -> SearchError {
     SearchError {
         code,
@@ -386,8 +380,9 @@ mod tests {
                 connection,
                 Some("2026-08-20"),
                 Some("2026-08-20"),
+                None,
+                None,
                 Some("image"),
-                DateField::Selected,
                 &[],
             )
         })
@@ -398,16 +393,44 @@ mod tests {
         let original_items = library::with_catalogue(|connection, _| {
             query_imported_items(
                 connection,
+                None,
+                None,
                 Some("2020-07-14"),
                 Some("2020-07-14"),
                 None,
-                DateField::Original,
                 &["summer".into(), "family".into()],
             )
         })
         .unwrap();
         assert_eq!(original_items.len(), 1);
         assert_eq!(original_items[0].candidate_id, 1);
+        let combined_items = library::with_catalogue(|connection, _| {
+            query_imported_items(
+                connection,
+                Some("2026-08-20"),
+                Some("2026-08-20"),
+                Some("2020-07-14"),
+                Some("2020-07-14"),
+                None,
+                &[],
+            )
+        })
+        .unwrap();
+        assert_eq!(combined_items.len(), 1);
+        assert_eq!(combined_items[0].candidate_id, 1);
+        let null_captured_items = library::with_catalogue(|connection, _| {
+            query_imported_items(
+                connection,
+                Some("2026-08-21"),
+                Some("2026-08-21"),
+                Some("2020-01-01"),
+                Some("2026-12-31"),
+                None,
+                &[],
+            )
+        })
+        .unwrap();
+        assert!(null_captured_items.is_empty());
         assert_eq!(
             suggest_library_tags(TagSuggestionRequest {
                 prefix: "su".into()
@@ -434,5 +457,12 @@ mod tests {
             "recent review tags are imported-only and deterministically ordered"
         );
         library::lock_library();
+    }
+
+    #[test]
+    fn date_range_validation_rejects_inverted_ranges() {
+        assert!(validate_date_range(Some("2026-08-21"), Some("2026-08-20")).is_err());
+        assert!(validate_date_range(Some("2026-08-20"), Some("2026-08-21")).is_ok());
+        assert!(validate_date_range(None, Some("2026-08-21")).is_ok());
     }
 }

@@ -284,25 +284,25 @@ No catalogue migration is expected: imported/captured dates and media types alre
 
 #### Automated
 
-- [x] 1.1 Build the left-side expandable filter workspace, applied-filter bar, and top-right action menu while preserving existing filters
-- [x] 1.2 Add responsive workspace/menu/filter styling and frontend source/CSS contract coverage
-- [x] 1.3 Run `cargo test --workspace` and `cargo check --workspace`
+- [x] 1.1 Build the left-side expandable filter workspace, applied-filter bar, and top-right action menu while preserving existing filters — 7b99340
+- [x] 1.2 Add responsive workspace/menu/filter styling and frontend source/CSS contract coverage — 7b99340
+- [x] 1.3 Run `cargo test --workspace` and `cargo check --workspace` — 7b99340
 
 #### Manual
 
-- [x] 1.4 Verify the workspace, existing filters, action routes, applied-filter removal, and requested header-text removal
+- [x] 1.4 Verify the workspace, existing filters, action routes, applied-filter removal, and requested header-text removal — 7b99340
 
 ### Phase 2: Independent imported and captured date ranges
 
 #### Automated
 
-- [ ] 2.1 Add the dual-range native search request, validation, AND predicates, and encrypted-catalogue coverage
-- [ ] 2.2 Wire four date controls and their applied-filter chips to the synchronized search command
-- [ ] 2.3 Run `cargo test --workspace` and `cargo check --workspace`
+- [x] 2.1 Add the dual-range native search request, validation, AND predicates, and encrypted-catalogue coverage
+- [x] 2.2 Wire four date controls and their applied-filter chips to the synchronized search command
+- [x] 2.3 Run `cargo test --workspace` and `cargo check --workspace`
 
 #### Manual
 
-- [ ] 2.4 Verify independent and combined date ranges, chip removal, and legacy captured-date behavior
+- [x] 2.4 Verify independent and combined date ranges, chip removal, and legacy captured-date behavior
 
 ### Phase 3: Checkbox media-type filtering
 
