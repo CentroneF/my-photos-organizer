@@ -23,12 +23,12 @@ On macOS and Windows, the installed app, native window, and web document title d
 
 - Migrating, copying, deleting, or otherwise touching data in the old application-data location.
 - Changing a protected library's on-disk marker, catalogue schema, password, or media files.
-- Renaming Rust package/crate identifiers, repository documentation, or foundation history.
+- Renaming repository documentation or foundation history.
 - Adding an auto-import, search, or duplicate-detection capability beyond the visual icon metaphor.
 
 ## Implementation Approach
 
-Treat the rename as a product-surface change, retaining existing internal package names to minimize unrelated churn. Use one approved, source-controlled square master image to generate every Tauri icon variant; preserve the selected concept's colored landscape and magnifier while simplifying shapes for 16–32 px recognition. Set `com.fcentron.photo-organizer` as the identifier and make the first-run result explicit through manual verification, without a migration path.
+Treat the rename as a complete runtime identity change: rename the native package/executable and library crate because macOS exposes the executable name during `cargo tauri dev`; synchronize the root Cargo and Dioxus application names to avoid leaving starter identity in build output. Use one approved, source-controlled square master image to generate every Tauri icon variant; preserve the selected concept's colored landscape and magnifier while simplifying shapes for 16–32 px recognition. Set `com.fcentron.photo-organizer` as the identifier and make the first-run result explicit through manual verification, without a migration path.
 
 ## Critical Implementation Details
 
@@ -44,11 +44,11 @@ Make the desktop product consistently say Photo Organizer and establish the inte
 
 #### 1. Native bundle and web identity
 
-**Files**: `src-tauri/tauri.conf.json`, `Dioxus.toml`
+**Files**: `Cargo.toml`, `Cargo.lock`, `Dioxus.toml`, `src-tauri/Cargo.toml`, `src-tauri/src/main.rs`, `src-tauri/tauri.conf.json`
 
-**Intent**: Give the installed app, native window, and web document the final Photo Organizer name, and place settings under the new application identifier.
+**Intent**: Give the installed app, native executable, window, web document, and build metadata the final Photo Organizer identity, and place settings under the new application identifier.
 
-**Contract**: `productName`, the primary window `title`, and `[web.app] title` equal `Photo Organizer`; bundle `identifier` changes from the bootstrap value to `com.fcentron.photo-organizer`. No code reads or migrates the old identifier's app-data directory.
+**Contract**: `productName`, the primary window `title`, and `[web.app] title` equal `Photo Organizer`; bundle `identifier` changes from the bootstrap value to `com.fcentron.photo-organizer`. The native package/executable becomes `photo-organizer`, its library crate becomes `photo_organizer_lib`, and `src-tauri/src/main.rs` imports that synchronized library name. The root Cargo package and Dioxus application names become `photo-organizer-ui`; `Cargo.lock` records the renamed packages. No code reads or migrates the old identifier's app-data directory.
 
 #### 2. Frontend and native user-facing wording
 
@@ -62,7 +62,7 @@ Make the desktop product consistently say Photo Organizer and establish the inte
 
 #### Automated Verification:
 
-- `rg -n 'bootstrap-scaffold|Photo Handler' src src-tauri Dioxus.toml` finds no remaining product-facing copy.
+- `rg -n 'bootstrap-scaffold|Photo Handler' Cargo.toml Cargo.lock Dioxus.toml src src-tauri` finds no remaining starter or prior product identity.
 - `cargo check --workspace` completes successfully without generating a DMG.
 - `cargo test --workspace` completes successfully.
 
@@ -186,7 +186,7 @@ This change intentionally has no migration. The new identifier creates a separat
 
 #### Automated
 
-- [ ] 1.1 Verify no product-facing `bootstrap-scaffold` or `Photo Handler` copy remains.
+- [ ] 1.1 Verify no `bootstrap-scaffold` or `Photo Handler` identity remains in the runtime project metadata or source.
 - [ ] 1.2 Run `cargo check --workspace` without generating a DMG.
 - [ ] 1.3 Run `cargo test --workspace`.
 

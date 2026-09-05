@@ -8,7 +8,7 @@ The desktop app will become **Photo Organizer**, replacing the remaining starter
 
 ## Starting Point
 
-The Tauri product name and native window still say `bootstrap-scaffold`; the frontend and native messages say Photo Handler. The repository currently packages stock Tauri icon assets, and settings are resolved from a Tauri identifier-derived application-data directory.
+The Tauri product name and native window still say `bootstrap-scaffold`; the frontend and native messages say Photo Handler. Crucially, the native Cargo package/executable is also `bootstrap-scaffold`, which macOS exposes when hovering the development app icon. The repository currently packages stock Tauri icon assets, and settings are resolved from a Tauri identifier-derived application-data directory.
 
 ## Desired End State
 
@@ -19,7 +19,7 @@ The installed app, native title bar, web title, interface, and native messages c
 | Decision | Choice | Why |
 | --- | --- | --- |
 | Product name | Photo Organizer | It describes the app's central purpose clearly. |
-| Rename scope | Product-facing surfaces | Delivers a coherent user experience without unrelated repository-history cleanup. |
+| Rename scope | Product-facing and runtime metadata | macOS surfaces the native executable name in development, so package/crate metadata is part of the visible identity. |
 | Bundle identifier | `com.fcentron.photo-organizer` | Removes scaffold identity from the installed application. |
 | Existing settings | Fresh start, no migration | Chosen to avoid data-copy complexity; existing libraries remain manually reopenable. |
 | Icon direction | Colorful photo landscape + magnifier | It makes photo discovery recognizable and gives the product a distinctive visual identity. |
@@ -29,7 +29,7 @@ The installed app, native title bar, web title, interface, and native messages c
 
 **In scope:**
 
-- Native, web, frontend, and native-message naming visible to users.
+- Native executable/library, root Cargo, and Dioxus application identity alongside native, web, frontend, and native-message naming visible to users.
 - New bundle identifier with explicitly fresh settings.
 - Production master artwork plus regenerated macOS and Windows icon assets.
 - Desktop build and first-run verification without a DMG.
@@ -38,7 +38,7 @@ The installed app, native title bar, web title, interface, and native messages c
 
 - Migration of remembered settings from the old identifier.
 - Any change to library catalogue data, protected-library markers, or user media.
-- Renaming internal crates, repository documentation, or historical planning documents.
+- Renaming repository documentation or historical planning documents.
 
 ## Architecture / Approach
 
