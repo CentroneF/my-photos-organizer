@@ -11,33 +11,17 @@ use crate::library::{self, SetupLibraryError};
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchLibraryRequest {
-    #[serde(default)]
-    pub date_field: DateField,
-    pub start_date: Option<String>,
-    pub end_date: Option<String>,
-    pub media_type: Option<MediaType>,
+    pub imported_start_date: Option<String>,
+    pub imported_end_date: Option<String>,
+    pub captured_start_date: Option<String>,
+    pub captured_end_date: Option<String>,
+    #[serde(default = "default_media_types")]
+    pub media_types: Vec<MediaType>,
     #[serde(default)]
     pub tags: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, Clone, Copy, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum DateField {
-    #[default]
-    Selected,
-    Original,
-}
-
-impl DateField {
-    fn column(self) -> &'static str {
-        match self {
-            Self::Selected => "d.effective_import_date",
-            Self::Original => "d.original_media_date",
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Clone, Copy)]
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum MediaType {
     Image,
@@ -51,6 +35,20 @@ impl MediaType {
             Self::Video => "video",
         }
     }
+}
+
+fn default_media_types() -> Vec<MediaType> {
+    vec![MediaType::Image, MediaType::Video]
+}
+
+fn normalize_media_types(media_types: Vec<MediaType>) -> Vec<MediaType> {
+    let mut normalized = Vec::new();
+    for media_type in media_types {
+        if !normalized.contains(&media_type) {
+            normalized.push(media_type);
+        }
+    }
+    normalized
 }
 
 #[derive(Debug, Serialize)]
@@ -74,13 +72,14 @@ pub struct SearchLibraryItem {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TagSuggestionRequest {
-    pub prefix: String,
+pub struct ListLibraryTagsRequest {
+    #[serde(default)]
+    pub query: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TagSuggestionResult {
+pub struct ListLibraryTagsResult {
     pub tags: Vec<String>,
 }
 
@@ -118,23 +117,22 @@ pub fn search_library(
     app: tauri::AppHandle,
     request: SearchLibraryRequest,
 ) -> Result<SearchLibraryResult, SearchError> {
-    let start_date = validate_date(request.start_date.as_deref())?;
-    let end_date = validate_date(request.end_date.as_deref())?;
-    if start_date.as_deref() > end_date.as_deref() {
-        return Err(error(
-            "invalid_date_range",
-            "The start date must be on or before the end date.",
-        ));
-    }
-    let media_type = request.media_type.map(MediaType::as_str);
+    let imported_start_date = validate_date(request.imported_start_date.as_deref())?;
+    let imported_end_date = validate_date(request.imported_end_date.as_deref())?;
+    validate_date_range(imported_start_date.as_deref(), imported_end_date.as_deref())?;
+    let captured_start_date = validate_date(request.captured_start_date.as_deref())?;
+    let captured_end_date = validate_date(request.captured_end_date.as_deref())?;
+    validate_date_range(captured_start_date.as_deref(), captured_end_date.as_deref())?;
+    let media_types = normalize_media_types(request.media_types);
     let tags = normalize_tags(&request.tags);
     let items = library::with_catalogue(|connection, root| {
         query_imported_items(
             connection,
-            start_date.as_deref(),
-            end_date.as_deref(),
-            media_type,
-            request.date_field,
+            imported_start_date.as_deref(),
+            imported_end_date.as_deref(),
+            captured_start_date.as_deref(),
+            captured_end_date.as_deref(),
+            &media_types,
             &tags,
         )
         .map(|items| (items, root.to_path_buf()))
@@ -167,24 +165,40 @@ pub fn search_library(
 
 fn query_imported_items(
     connection: &Connection,
-    start: Option<&str>,
-    end: Option<&str>,
-    media_type: Option<&str>,
-    date_field: DateField,
+    imported_start: Option<&str>,
+    imported_end: Option<&str>,
+    captured_start: Option<&str>,
+    captured_end: Option<&str>,
+    media_types: &[MediaType],
     tags: &[String],
 ) -> Result<Vec<CatalogueItem>, SearchError> {
-    let date_column = date_field.column();
-    let mut sql = format!("SELECT d.candidate_id, d.destination_path, c.media_type, d.effective_import_date, d.original_media_date FROM item_decisions d JOIN review_candidates c ON c.id = d.candidate_id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND d.replaced_by_candidate_id IS NULL AND (?1 IS NULL OR {date_column} >= ?1) AND (?2 IS NULL OR {date_column} <= ?2) AND (?3 IS NULL OR c.media_type = ?3)");
-    for index in 0..tags.len() {
-        sql.push_str(&format!(" AND EXISTS (SELECT 1 FROM candidate_tags ct JOIN tags t ON t.id = ct.tag_id WHERE ct.candidate_id = d.candidate_id AND t.normalized_name = ?{})", index + 4));
+    if media_types.is_empty() {
+        return Ok(vec![]);
     }
-    sql.push_str(&format!(" ORDER BY {date_column} DESC, d.candidate_id ASC"));
+    let mut sql = "SELECT d.candidate_id, d.destination_path, c.media_type, d.effective_import_date, d.original_media_date FROM item_decisions d JOIN review_candidates c ON c.id = d.candidate_id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND d.replaced_by_candidate_id IS NULL AND (?1 IS NULL OR d.effective_import_date >= ?1) AND (?2 IS NULL OR d.effective_import_date <= ?2) AND (?3 IS NULL OR d.original_media_date >= ?3) AND (?4 IS NULL OR d.original_media_date <= ?4) AND c.media_type IN (".to_owned();
+    for index in 0..media_types.len() {
+        if index > 0 {
+            sql.push_str(", ");
+        }
+        sql.push_str(&format!("?{}", index + 5));
+    }
+    sql.push(')');
+    for index in 0..tags.len() {
+        sql.push_str(&format!(" AND EXISTS (SELECT 1 FROM candidate_tags ct JOIN tags t ON t.id = ct.tag_id WHERE ct.candidate_id = d.candidate_id AND t.normalized_name = ?{})", index + 5 + media_types.len()));
+    }
+    sql.push_str(" ORDER BY d.effective_import_date DESC, d.candidate_id ASC");
     let mut statement = connection.prepare(&sql).map_err(database_error)?;
     let mut values = vec![
-        start.map(str::to_owned).into(),
-        end.map(str::to_owned).into(),
-        media_type.map(str::to_owned).into(),
+        imported_start.map(str::to_owned).into(),
+        imported_end.map(str::to_owned).into(),
+        captured_start.map(str::to_owned).into(),
+        captured_end.map(str::to_owned).into(),
     ];
+    values.extend(
+        media_types
+            .iter()
+            .map(|media_type| Value::from(media_type.as_str().to_owned())),
+    );
     values.extend(tags.iter().cloned().map(Value::from));
     let rows = statement
         .query_map(params_from_iter(values), |row| {
@@ -217,23 +231,26 @@ fn query_imported_items(
     .collect()
 }
 
-pub fn suggest_library_tags(
-    request: TagSuggestionRequest,
-) -> Result<TagSuggestionResult, SearchError> {
-    let prefix = normalize_tag(&request.prefix);
-    if prefix.chars().count() < 2 {
-        return Ok(TagSuggestionResult { tags: vec![] });
-    }
+pub fn list_library_tags(
+    request: ListLibraryTagsRequest,
+) -> Result<ListLibraryTagsResult, SearchError> {
+    let query = request
+        .query
+        .as_deref()
+        .map(normalize_tag)
+        .unwrap_or_default();
     let tags = library::with_catalogue(|connection, _| {
-        let mut statement = connection.prepare("SELECT DISTINCT t.normalized_name FROM tags t JOIN candidate_tags ct ON ct.tag_id = t.id JOIN item_decisions d ON d.candidate_id = ct.candidate_id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND d.replaced_by_candidate_id IS NULL AND t.normalized_name LIKE ?1 ESCAPE '\\' ORDER BY t.normalized_name LIMIT 12").map_err(database_error)?;
+        let mut statement = connection.prepare("SELECT t.normalized_name, COUNT(*) AS frequency FROM tags t JOIN candidate_tags ct ON ct.tag_id = t.id JOIN item_decisions d ON d.candidate_id = ct.candidate_id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND d.replaced_by_candidate_id IS NULL AND (?1 = '' OR t.normalized_name LIKE ?2 ESCAPE '\\') GROUP BY t.id, t.normalized_name ORDER BY frequency DESC, t.normalized_name ASC LIMIT 10").map_err(database_error)?;
         let results = statement
-            .query_map([format!("{}%", escape_like(&prefix))], |row| row.get(0))
+            .query_map([&query, &format!("%{}%", escape_like(&query))], |row| {
+                row.get(0)
+            })
             .map_err(database_error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(database_error)?;
         Ok::<_, SearchError>(results)
     })?;
-    Ok(TagSuggestionResult { tags })
+    Ok(ListLibraryTagsResult { tags })
 }
 
 pub fn recent_library_tags() -> Result<RecentTagsResult, SearchError> {
@@ -342,6 +359,16 @@ fn validate_date(value: Option<&str>) -> Result<Option<String>, SearchError> {
         })
         .transpose()
 }
+
+fn validate_date_range(start: Option<&str>, end: Option<&str>) -> Result<(), SearchError> {
+    if start > end {
+        return Err(error(
+            "invalid_date_range",
+            "The start date must be on or before the end date.",
+        ));
+    }
+    Ok(())
+}
 fn error(code: &'static str, message: impl Into<String>) -> SearchError {
     SearchError {
         code,
@@ -386,8 +413,9 @@ mod tests {
                 connection,
                 Some("2026-08-20"),
                 Some("2026-08-20"),
-                Some("image"),
-                DateField::Selected,
+                None,
+                None,
+                &[MediaType::Image],
                 &[],
             )
         })
@@ -398,32 +426,54 @@ mod tests {
         let original_items = library::with_catalogue(|connection, _| {
             query_imported_items(
                 connection,
-                Some("2020-07-14"),
-                Some("2020-07-14"),
                 None,
-                DateField::Original,
+                None,
+                Some("2020-07-14"),
+                Some("2020-07-14"),
+                &[MediaType::Image, MediaType::Video],
                 &["summer".into(), "family".into()],
             )
         })
         .unwrap();
         assert_eq!(original_items.len(), 1);
         assert_eq!(original_items[0].candidate_id, 1);
+        let combined_items = library::with_catalogue(|connection, _| {
+            query_imported_items(
+                connection,
+                Some("2026-08-20"),
+                Some("2026-08-20"),
+                Some("2020-07-14"),
+                Some("2020-07-14"),
+                &[MediaType::Image, MediaType::Video],
+                &[],
+            )
+        })
+        .unwrap();
+        assert_eq!(combined_items.len(), 1);
+        assert_eq!(combined_items[0].candidate_id, 1);
+        let null_captured_items = library::with_catalogue(|connection, _| {
+            query_imported_items(
+                connection,
+                Some("2026-08-21"),
+                Some("2026-08-21"),
+                Some("2020-01-01"),
+                Some("2026-12-31"),
+                &[MediaType::Image, MediaType::Video],
+                &[],
+            )
+        })
+        .unwrap();
+        assert!(null_captured_items.is_empty());
         assert_eq!(
-            suggest_library_tags(TagSuggestionRequest {
-                prefix: "su".into()
+            list_library_tags(ListLibraryTagsRequest {
+                query: Some("mm".into())
             })
             .unwrap()
             .tags,
             ["summer"]
         );
-        assert!(
-            suggest_library_tags(TagSuggestionRequest { prefix: "s".into() })
-                .unwrap()
-                .tags
-                .is_empty()
-        );
-        assert!(suggest_library_tags(TagSuggestionRequest {
-            prefix: "sk".into()
+        assert!(list_library_tags(ListLibraryTagsRequest {
+            query: Some("sk".into())
         })
         .unwrap()
         .tags
@@ -434,5 +484,135 @@ mod tests {
             "recent review tags are imported-only and deterministically ordered"
         );
         library::lock_library();
+    }
+
+    #[test]
+    fn library_tag_list_ranks_literal_substrings_from_active_imports_only() {
+        let _session_guard = library::test_session_guard();
+        let directory = tempdir().unwrap();
+        library::setup_library(library::SetupLibraryRequest {
+            folder_path: directory.path().display().to_string(),
+            password: "correct horse battery staple".into(),
+            password_confirmation: "correct horse battery staple".into(),
+            recovery_question: "pet".into(),
+            recovery_answer: "Mochi".into(),
+        })
+        .unwrap();
+        library::with_catalogue(|connection, _| {
+            connection.execute_batch("INSERT INTO review_sessions (id, source_path, state) VALUES (1, 'source', 'complete');
+                INSERT INTO review_candidates (id, session_id, relative_path, file_size, modified_at, media_type, decision) VALUES
+                (1,1,'1.jpg',1,0,'image','imported'),(2,1,'2.jpg',1,0,'image','imported'),(3,1,'3.jpg',1,0,'image','imported'),(4,1,'4.jpg',1,0,'image','imported'),(5,1,'5.jpg',1,0,'image','imported'),(6,1,'6.jpg',1,0,'image','imported'),(7,1,'7.jpg',1,0,'image','imported'),(8,1,'8.jpg',1,0,'image','imported'),(9,1,'9.jpg',1,0,'image','imported'),(10,1,'10.jpg',1,0,'image','imported'),(11,1,'11.jpg',1,0,'image','imported'),(12,1,'12.jpg',1,0,'image','imported'),(13,1,'13.jpg',1,0,'image','imported'),(14,1,'14.jpg',1,0,'image','skipped'),(15,1,'15.jpg',1,0,'image','imported');
+                INSERT INTO item_decisions (candidate_id, decision, destination_path, effective_import_date, replaced_by_candidate_id) VALUES
+                (1,'imported','1.jpg','2026-08-20',NULL),(2,'imported','2.jpg','2026-08-20',NULL),(3,'imported','3.jpg','2026-08-20',NULL),(4,'imported','4.jpg','2026-08-20',NULL),(5,'imported','5.jpg','2026-08-20',NULL),(6,'imported','6.jpg','2026-08-20',NULL),(7,'imported','7.jpg','2026-08-20',NULL),(8,'imported','8.jpg','2026-08-20',NULL),(9,'imported','9.jpg','2026-08-20',NULL),(10,'imported','10.jpg','2026-08-20',NULL),(11,'imported','11.jpg','2026-08-20',NULL),(12,'imported','12.jpg','2026-08-20',NULL),(13,'imported','13.jpg','2026-08-20',NULL),(14,'skipped',NULL,'2026-08-20',NULL),(15,'imported','15.jpg','2026-08-20',1);
+                INSERT INTO tags (id, normalized_name) VALUES (1,'alpha'),(2,'beta'),(3,'middle tag'),(4,'percent%tag'),(5,'under_tag'),(6,'tag-a'),(7,'tag-b'),(8,'tag-c'),(9,'tag-d'),(10,'tag-e'),(11,'tag-f'),(12,'skipped-only'),(13,'replaced-only');
+                INSERT INTO candidate_tags (candidate_id, tag_id) VALUES (1,1),(2,1),(3,1),(4,2),(5,2),(6,2),(7,3),(8,4),(9,5),(10,6),(11,7),(12,8),(13,9),(1,10),(2,11),(14,12),(15,13);").map_err(database_error)?;
+            Ok::<(), SearchError>(())
+        }).unwrap();
+
+        assert_eq!(
+            list_library_tags(ListLibraryTagsRequest { query: None })
+                .unwrap()
+                .tags,
+            [
+                "alpha",
+                "beta",
+                "middle tag",
+                "percent%tag",
+                "tag-a",
+                "tag-b",
+                "tag-c",
+                "tag-d",
+                "tag-e",
+                "tag-f"
+            ],
+            "blank queries return the ten most-used tags, with alphabetical ties"
+        );
+        assert_eq!(
+            list_library_tags(ListLibraryTagsRequest {
+                query: Some("  DDLE  ".into())
+            })
+            .unwrap()
+            .tags,
+            ["middle tag"],
+            "queries are whitespace-normalized, case-normalized, and substring-based"
+        );
+        assert_eq!(
+            list_library_tags(ListLibraryTagsRequest {
+                query: Some("%".into())
+            })
+            .unwrap()
+            .tags,
+            ["percent%tag"],
+            "percent is matched literally"
+        );
+        assert_eq!(
+            list_library_tags(ListLibraryTagsRequest {
+                query: Some("_".into())
+            })
+            .unwrap()
+            .tags,
+            ["under_tag"],
+            "underscore is matched literally"
+        );
+        assert!(list_library_tags(ListLibraryTagsRequest {
+            query: Some("only".into())
+        })
+        .unwrap()
+        .tags
+        .is_empty());
+        library::lock_library();
+    }
+
+    #[test]
+    fn media_type_selection_supports_each_type_both_duplicates_and_empty() {
+        let _session_guard = library::test_session_guard();
+        let directory = tempdir().unwrap();
+        library::setup_library(library::SetupLibraryRequest {
+            folder_path: directory.path().display().to_string(),
+            password: "correct horse battery staple".into(),
+            password_confirmation: "correct horse battery staple".into(),
+            recovery_question: "pet".into(),
+            recovery_answer: "Mochi".into(),
+        })
+        .unwrap();
+        library::with_catalogue(|connection, _| {
+            connection.execute_batch("INSERT INTO review_sessions (id, source_path, state) VALUES (1, 'source', 'complete'); INSERT INTO review_candidates (id, session_id, relative_path, file_size, modified_at, media_type, decision) VALUES (1, 1, 'one.jpg', 1, 0, 'image', 'imported'), (2, 1, 'two.mp4', 1, 0, 'video', 'imported'); INSERT INTO item_decisions (candidate_id, decision, destination_path, effective_import_date) VALUES (1, 'imported', 'one.jpg', '2026-08-20'), (2, 'imported', 'two.mp4', '2026-08-21');").map_err(database_error)?;
+            Ok::<(), SearchError>(())
+        }).unwrap();
+
+        for (selection, expected_ids) in [
+            (vec![MediaType::Image], vec![1]),
+            (vec![MediaType::Video], vec![2]),
+            (vec![MediaType::Image, MediaType::Video], vec![2, 1]),
+            (vec![MediaType::Image, MediaType::Image], vec![1]),
+            (vec![], vec![]),
+        ] {
+            let selected = normalize_media_types(selection);
+            let ids = library::with_catalogue(|connection, _| {
+                query_imported_items(connection, None, None, None, None, &selected, &[]).map(
+                    |items| {
+                        items
+                            .into_iter()
+                            .map(|item| item.candidate_id)
+                            .collect::<Vec<_>>()
+                    },
+                )
+            })
+            .unwrap();
+            assert_eq!(ids, expected_ids);
+        }
+
+        assert_eq!(
+            default_media_types(),
+            vec![MediaType::Image, MediaType::Video]
+        );
+        library::lock_library();
+    }
+
+    #[test]
+    fn date_range_validation_rejects_inverted_ranges() {
+        assert!(validate_date_range(Some("2026-08-21"), Some("2026-08-20")).is_err());
+        assert!(validate_date_range(Some("2026-08-20"), Some("2026-08-21")).is_ok());
+        assert!(validate_date_range(None, Some("2026-08-21")).is_ok());
     }
 }

@@ -313,10 +313,11 @@ struct SearchLibraryItem {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SearchLibraryRequest<'a> {
-    date_field: &'a str,
-    start_date: Option<&'a str>,
-    end_date: Option<&'a str>,
-    media_type: Option<&'a str>,
+    imported_start_date: Option<&'a str>,
+    imported_end_date: Option<&'a str>,
+    captured_start_date: Option<&'a str>,
+    captured_end_date: Option<&'a str>,
+    media_types: &'a [String],
     tags: &'a [String],
 }
 #[derive(Serialize)]
@@ -326,7 +327,7 @@ struct SearchLibraryInvokeArgs<'a> {
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct TagSuggestionResult {
+struct ListLibraryTagsResult {
     tags: Vec<String>,
 }
 
@@ -337,13 +338,13 @@ struct RecentTagsResult {
 }
 
 #[derive(Serialize)]
-struct TagSuggestionRequest<'a> {
-    prefix: &'a str,
+struct ListLibraryTagsRequest<'a> {
+    query: Option<&'a str>,
 }
 
 #[derive(Serialize)]
-struct TagSuggestionInvokeArgs<'a> {
-    request: TagSuggestionRequest<'a>,
+struct ListLibraryTagsInvokeArgs<'a> {
+    request: ListLibraryTagsRequest<'a>,
 }
 
 fn command_error(value: JsValue, fallback: &str) -> String {
@@ -488,15 +489,20 @@ pub fn App() -> Element {
     let mut new_password = use_signal(String::new);
     let mut new_confirmation = use_signal(String::new);
     let mut clean_password = use_signal(String::new);
-    let mut search_start_date = use_signal(String::new);
-    let mut search_end_date = use_signal(String::new);
-    let mut search_date_field = use_signal(|| "selected".to_owned());
-    let mut search_media_type = use_signal(String::new);
+    let mut search_imported_start_date = use_signal(String::new);
+    let mut search_imported_end_date = use_signal(String::new);
+    let mut search_captured_start_date = use_signal(String::new);
+    let mut search_captured_end_date = use_signal(String::new);
+    let mut search_media_types = use_signal(|| vec!["image".to_owned(), "video".to_owned()]);
     let mut search_tag_input = use_signal(String::new);
     let mut search_selected_tags = use_signal(Vec::<String>::new);
-    let mut tag_suggestions = use_signal(Vec::<String>::new);
+    let mut library_tag_options = use_signal(Vec::<String>::new);
     let mut search_items = use_signal(Vec::<SearchLibraryItem>::new);
     let mut search_loading = use_signal(|| false);
+    let mut search_actions_open = use_signal(|| false);
+    let mut search_dates_expanded = use_signal(|| true);
+    let mut search_media_expanded = use_signal(|| true);
+    let mut search_tags_expanded = use_signal(|| true);
 
     use_effect(move || {
         spawn(async move {
@@ -575,19 +581,23 @@ pub fn App() -> Element {
         if step() != "home" {
             return;
         }
-        let start = search_start_date();
-        let end = search_end_date();
-        let date_field = search_date_field();
-        let media = search_media_type();
+        let imported_start = search_imported_start_date();
+        let imported_end = search_imported_end_date();
+        let captured_start = search_captured_start_date();
+        let captured_end = search_captured_end_date();
+        let media_types = search_media_types();
         let tags = search_selected_tags();
         spawn(async move {
             search_loading.set(true);
             let request = SearchLibraryInvokeArgs {
                 request: SearchLibraryRequest {
-                    date_field: &date_field,
-                    start_date: (!start.is_empty()).then_some(start.as_str()),
-                    end_date: (!end.is_empty()).then_some(end.as_str()),
-                    media_type: (!media.is_empty()).then_some(media.as_str()),
+                    imported_start_date: (!imported_start.is_empty())
+                        .then_some(imported_start.as_str()),
+                    imported_end_date: (!imported_end.is_empty()).then_some(imported_end.as_str()),
+                    captured_start_date: (!captured_start.is_empty())
+                        .then_some(captured_start.as_str()),
+                    captured_end_date: (!captured_end.is_empty()).then_some(captured_end.as_str()),
+                    media_types: &media_types,
                     tags: &tags,
                 },
             };
@@ -612,29 +622,29 @@ pub fn App() -> Element {
     });
 
     use_effect(move || {
-        let prefix = search_tag_input();
-        if prefix.chars().count() < 2 {
-            tag_suggestions.set(Vec::new());
+        if step() != "home" || !search_tags_expanded() {
             return;
         }
+        let query = search_tag_input();
         spawn(async move {
-            let request = TagSuggestionInvokeArgs {
-                request: TagSuggestionRequest { prefix: &prefix },
+            let request = ListLibraryTagsInvokeArgs {
+                request: ListLibraryTagsRequest {
+                    query: (!query.trim().is_empty()).then_some(query.as_str()),
+                },
             };
             match serde_wasm_bindgen::to_value(&request) {
-                Ok(args) => match invoke("suggest_library_tags", args).await {
-                    Ok(value) => match serde_wasm_bindgen::from_value::<TagSuggestionResult>(value)
-                    {
-                        Ok(result) => tag_suggestions.set(result.tags),
-                        Err(_) => {
-                            error.set("Tag suggestions returned an unexpected response.".into())
+                Ok(args) => match invoke("list_library_tags", args).await {
+                    Ok(value) => {
+                        match serde_wasm_bindgen::from_value::<ListLibraryTagsResult>(value) {
+                            Ok(result) => library_tag_options.set(result.tags),
+                            Err(_) => {
+                                error.set("The tag list returned an unexpected response.".into())
+                            }
                         }
-                    },
-                    Err(value) => {
-                        error.set(command_error(value, "Could not load tag suggestions."))
                     }
+                    Err(value) => error.set(command_error(value, "Could not load library tags.")),
                 },
-                Err(_) => error.set("Could not prepare tag suggestions.".into()),
+                Err(_) => error.set("Could not prepare the tag list.".into()),
             }
         });
     });
@@ -1332,23 +1342,115 @@ pub fn App() -> Element {
                         button { class: "primary-button", r#type: "button", onclick: choose_another, "Open existing library" }
                     } else if step() == "home" {
                         div { class: "library-search", "data-testid": "library-search",
-                            div { class: "library-search-header", div { p { class: "step-label success-label", "LIBRARY SEARCH" } h2 { "Your managed media" } p { class: "lede", "Browse imported copies. Originals remain untouched." } }
-                                div { class: "library-search-actions", button { class: "primary-button", r#type: "button", onclick: move |_| { error.set(String::new()); step.set("import".into()); }, "Import media" } button { class: "secondary-button", r#type: "button", onclick: move |_| { error.set(String::new()); step.set("settings".into()); }, "Library settings" } button { class: "secondary-button", r#type: "button", onclick: close_library, disabled: busy(), if busy() { "Closing…" } else { "Close" } } button { class: "secondary-button", r#type: "button", onclick: move |_| step.set("danger".into()), "Danger zone" } }
-                            }
-                            div { class: "search-filters",
-                                label { "Date to search" select { value: "{search_date_field}", onchange: move |event| search_date_field.set(event.value()), option { value: "selected", "Selected import date" } option { value: "original", "Original media date" } } }
-                                label { "From" input { r#type: "date", value: "{search_start_date}", oninput: move |event| search_start_date.set(event.value()) } }
-                                label { "To" input { r#type: "date", value: "{search_end_date}", oninput: move |event| search_end_date.set(event.value()) } }
-                                label { "Media type" select { value: "{search_media_type}", onchange: move |event| search_media_type.set(event.value()), option { value: "", "All media" } option { value: "image", "Images" } option { value: "video", "Videos" } } }
-                                div { class: "tag-filter", label { "Tags" input { value: "{search_tag_input}", oninput: move |event| search_tag_input.set(event.value()), placeholder: "Type at least two characters", "aria-describedby": "tag-suggestion-help" } } small { id: "tag-suggestion-help", "Suggestions include imported media only." }
-                                    if !tag_suggestions().is_empty() { div { class: "tag-suggestions", role: "listbox", for suggestion in tag_suggestions() { button { class: "tag-suggestion", r#type: "button", role: "option", onclick: move |_| { let suggestion = suggestion.clone(); search_selected_tags.with_mut(|tags| { if !tags.contains(&suggestion) { tags.push(suggestion); tags.sort(); } }); search_tag_input.set(String::new()); tag_suggestions.set(Vec::new()); }, "{suggestion}" } } } }
-                                    if !search_selected_tags().is_empty() { div { class: "selected-tags", "aria-label": "Selected tags", for tag in search_selected_tags() { button { class: "tag-chip", r#type: "button", onclick: move |_| search_selected_tags.with_mut(|tags| tags.retain(|selected| selected != &tag)), "{tag} ×" } } } }
+                            div { class: "library-search-header",
+                                h2 { "Your managed media" }
+                                div { class: "library-action-menu",
+                                    button {
+                                        class: "library-action-trigger",
+                                        r#type: "button",
+                                        "aria-label": "Library actions",
+                                        "aria-expanded": "{search_actions_open}",
+                                        "aria-controls": "library-action-menu",
+                                        onclick: move |_| search_actions_open.set(!search_actions_open()),
+                                        "⚙"
+                                    }
+                                    if search_actions_open() {
+                                        div { id: "library-action-menu", class: "library-action-popover", role: "menu",
+                                            button { r#type: "button", role: "menuitem", onclick: move |_| { error.set(String::new()); search_actions_open.set(false); step.set("import".into()); }, "Import media" }
+                                            button { r#type: "button", role: "menuitem", onclick: move |_| { error.set(String::new()); search_actions_open.set(false); step.set("settings".into()); }, "Library settings" }
+                                            button { r#type: "button", role: "menuitem", onclick: close_library, disabled: busy(), if busy() { "Closing…" } else { "Close library" } }
+                                            button { r#type: "button", role: "menuitem", onclick: move |_| { search_actions_open.set(false); step.set("danger".into()); }, "Danger zone" }
+                                        }
+                                    }
                                 }
                             }
-                            if search_date_field() == "original" { p { class: "privacy-note", "Original dates are available only for imports made after this feature was added. Earlier imports remain searchable by selected import date." } }
-                            if search_loading() { p { class: "privacy-note", "Loading imported media…" } }
-                            if !search_loading() && search_items().is_empty() { div { class: "library-empty", "data-testid": "library-empty-state", h3 { "No media has been imported yet." } p { "Use Import media to safely review a folder and create managed copies. Originals are never moved or deleted." } button { class: "primary-button", r#type: "button", onclick: move |_| step.set("import".into()), "Import media" } } }
-                            if !search_loading() && !search_items().is_empty() { div { class: "media-grid", "data-testid": "library-search-grid", for item in search_items() { article { class: "media-card", div { class: "media-card-preview", if item.preview_state == "available" && item.preview_url.is_some() { if item.media_type == "video" { VideoCardPreview { key: "{item.preview_url.clone().unwrap_or_default()}", preview_url: item.preview_url.clone().unwrap_or_default() } } else { img { src: "{item.preview_url.clone().unwrap_or_default()}", alt: "Preview of {item.filename}" } } } else { p { class: "preview-fallback", "Preview unavailable" } } } div { class: "media-card-details", strong { "{item.filename}" } small { "{item.media_type}" } small { "Selected: " {item.effective_import_date.clone().unwrap_or_else(|| "unavailable".into())} } small { "Original: " {item.original_media_date.clone().unwrap_or_else(|| "not recorded".into())} } if !item.tags.is_empty() { small { "Tags: " {item.tags.join(", ")} } } } } } } }
+                            div { class: "library-search-workspace",
+                                main { class: "library-results",
+                                    if !search_imported_start_date().is_empty() || !search_imported_end_date().is_empty() || !search_captured_start_date().is_empty() || !search_captured_end_date().is_empty() || search_media_types().len() != 2 || !search_media_types().iter().any(|media_type| media_type == "image") || !search_media_types().iter().any(|media_type| media_type == "video") || !search_selected_tags().is_empty() {
+                                        div { class: "applied-filter-bar", "aria-label": "Applied filters",
+                                            strong { "Applied filters" }
+                                            if !search_imported_start_date().is_empty() {
+                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_imported_start_date.set(String::new()), "Imported from: {search_imported_start_date} ×" }
+                                            }
+                                            if !search_imported_end_date().is_empty() {
+                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_imported_end_date.set(String::new()), "Imported to: {search_imported_end_date} ×" }
+                                            }
+                                            if !search_captured_start_date().is_empty() {
+                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_captured_start_date.set(String::new()), "Captured from: {search_captured_start_date} ×" }
+                                            }
+                                            if !search_captured_end_date().is_empty() {
+                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_captured_end_date.set(String::new()), "Captured to: {search_captured_end_date} ×" }
+                                            }
+                                            if search_media_types().is_empty() {
+                                                span { class: "applied-filter-empty", "No media types selected" }
+                                            } else if search_media_types().len() != 2 || !search_media_types().iter().any(|media_type| media_type == "image") || !search_media_types().iter().any(|media_type| media_type == "video") {
+                                                for media_type in search_media_types() {
+                                                    button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_media_types.with_mut(|media_types| media_types.retain(|selected| selected != &media_type)),
+                                                        if media_type == "image" { "Media: Images ×" } else { "Media: Videos ×" }
+                                                    }
+                                                }
+                                            }
+                                            for tag in search_selected_tags() {
+                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_selected_tags.with_mut(|tags| tags.retain(|selected| selected != &tag)), "{tag} ×" }
+                                            }
+                                            button { class: "clear-filters-button", r#type: "button", onclick: move |_| { search_imported_start_date.set(String::new()); search_imported_end_date.set(String::new()); search_captured_start_date.set(String::new()); search_captured_end_date.set(String::new()); search_media_types.set(vec!["image".into(), "video".into()]); search_tag_input.set(String::new()); search_selected_tags.set(Vec::new()); }, "Clear all" }
+                                        }
+                                    }
+                                    if !search_captured_start_date().is_empty() || !search_captured_end_date().is_empty() { p { class: "privacy-note", "Captured dates are available only for imports made after this feature was added. Earlier imports remain searchable by imported date." } }
+                                    if search_loading() { p { class: "privacy-note", "Loading imported media…" } }
+                                    if !search_loading() && search_items().is_empty() { div { class: "library-empty", "data-testid": "library-empty-state", if search_media_types().is_empty() { h3 { "No media types selected." } p { "Select Images or Videos to show matching imported media." } } else if !search_imported_start_date().is_empty() || !search_imported_end_date().is_empty() || !search_captured_start_date().is_empty() || !search_captured_end_date().is_empty() || search_media_types().len() != 2 || !search_selected_tags().is_empty() { h3 { "No media matches these filters." } p { "Adjust or clear filters to see other managed media." } } else { h3 { "No media has been imported yet." } p { "Use Import media to safely review a folder and create managed copies. Originals are never moved or deleted." } button { class: "primary-button", r#type: "button", onclick: move |_| step.set("import".into()), "Import media" } } } }
+                                    if !search_loading() && !search_items().is_empty() { div { class: "media-grid", "data-testid": "library-search-grid", for item in search_items() { article { class: "media-card", div { class: "media-card-preview", if item.preview_state == "available" && item.preview_url.is_some() { if item.media_type == "video" { VideoCardPreview { key: "{item.preview_url.clone().unwrap_or_default()}", preview_url: item.preview_url.clone().unwrap_or_default() } } else { img { src: "{item.preview_url.clone().unwrap_or_default()}", alt: "Preview of {item.filename}" } } } else { p { class: "preview-fallback", "Preview unavailable" } } } div { class: "media-card-details", strong { "{item.filename}" } small { "{item.media_type}" } small { "Selected: " {item.effective_import_date.clone().unwrap_or_else(|| "unavailable".into())} } small { "Original: " {item.original_media_date.clone().unwrap_or_else(|| "not recorded".into())} } if !item.tags.is_empty() { small { "Tags: " {item.tags.join(", ")} } } } } } } }
+                                }
+                                aside { class: "filter-sidebar", "aria-label": "Library filters",
+                                    section { class: "filter-section",
+                                        button { class: "filter-disclosure", r#type: "button", "aria-expanded": "{search_dates_expanded}", onclick: move |_| search_dates_expanded.set(!search_dates_expanded()), span { "Date" } span { if search_dates_expanded() { "−" } else { "+" } } }
+                                        if search_dates_expanded() { div { class: "filter-section-content", strong { "Imported date" } div { class: "date-range-inputs", label { "From" input { r#type: "date", value: "{search_imported_start_date}", oninput: move |event| search_imported_start_date.set(event.value()) } } label { "To" input { r#type: "date", value: "{search_imported_end_date}", oninput: move |event| search_imported_end_date.set(event.value()) } } } strong { "Captured date" } div { class: "date-range-inputs", label { "From" input { r#type: "date", value: "{search_captured_start_date}", oninput: move |event| search_captured_start_date.set(event.value()) } } label { "To" input { r#type: "date", value: "{search_captured_end_date}", oninput: move |event| search_captured_end_date.set(event.value()) } } } } }
+                                    }
+                                    section { class: "filter-section",
+                                        button { class: "filter-disclosure", r#type: "button", "aria-expanded": "{search_media_expanded}", onclick: move |_| search_media_expanded.set(!search_media_expanded()), span { "Media type" } span { if search_media_expanded() { "−" } else { "+" } } }
+                                        if search_media_expanded() {
+                                            div { class: "filter-section-content media-type-options",
+                                                label { class: "media-type-option",
+                                                    input {
+                                                        r#type: "checkbox",
+                                                        checked: search_media_types().iter().any(|media_type| media_type == "image"),
+                                                        onchange: move |_| search_media_types.with_mut(|media_types| {
+                                                            if media_types.iter().any(|media_type| media_type == "image") {
+                                                                media_types.retain(|media_type| media_type != "image");
+                                                            } else {
+                                                                media_types.push("image".into());
+                                                                media_types.sort();
+                                                            }
+                                                        }),
+                                                    }
+                                                    "Images"
+                                                }
+                                                label { class: "media-type-option",
+                                                    input {
+                                                        r#type: "checkbox",
+                                                        checked: search_media_types().iter().any(|media_type| media_type == "video"),
+                                                        onchange: move |_| search_media_types.with_mut(|media_types| {
+                                                            if media_types.iter().any(|media_type| media_type == "video") {
+                                                                media_types.retain(|media_type| media_type != "video");
+                                                            } else {
+                                                                media_types.push("video".into());
+                                                                media_types.sort();
+                                                            }
+                                                        }),
+                                                    }
+                                                    "Videos"
+                                                }
+                                            }
+                                        }
+                                    }
+                                    section { class: "filter-section",
+                                        button { class: "filter-disclosure", r#type: "button", "aria-expanded": "{search_tags_expanded}", onclick: move |_| search_tags_expanded.set(!search_tags_expanded()), span { "Tags" } span { if search_tags_expanded() { "−" } else { "+" } } }
+                                        if search_tags_expanded() { div { class: "filter-section-content tag-filter", label { "Search tags" input { value: "{search_tag_input}", oninput: move |event| search_tag_input.set(event.value()), placeholder: "Search imported tags", "aria-describedby": "tag-list-help" } } small { id: "tag-list-help", "Top tags and search results include imported media only." }
+                                            div { class: "tag-options", role: "group", "aria-label": "Imported tags", for tag in library_tag_options() { button { class: "tag-option", r#type: "button", "aria-pressed": "{search_selected_tags().contains(&tag)}", onclick: move |_| { let tag = tag.clone(); search_selected_tags.with_mut(|tags| { if tags.contains(&tag) { tags.retain(|selected| selected != &tag); } else { tags.push(tag); tags.sort(); } }); }, "{tag}" } } }
+                                        } }
+                                    }
+                                }
+                            }
                         }
                     } else if step() == "settings" {
                         p { class: "step-label success-label", "LIBRARY SETTINGS" }
@@ -1790,17 +1892,80 @@ mod review_layout_tests {
     }
 
     #[test]
-    fn library_search_exposes_date_mode_and_tag_suggestion_hooks() {
+    fn library_search_uses_workspace_menu_and_applied_filter_hooks() {
         let source = include_str!("app.rs");
         for hook in [
-            "suggest_library_tags",
-            "Selected import date",
-            "Original media date",
-            "tag-suggestions",
-            "selected-tags",
-            "Original dates are available only for imports made after this feature was added",
+            "list_library_tags",
+            "imported_start_date",
+            "imported_end_date",
+            "captured_start_date",
+            "captured_end_date",
+            "Imported date",
+            "Captured date",
+            "Imported from:",
+            "Captured from:",
+            "media_types",
+            "search_media_types",
+            "r#type: \"checkbox\"",
+            "Images",
+            "Videos",
+            "No media types selected.",
+            "Media: Images ×",
+            "Media: Videos ×",
+            "library_tag_options",
+            "tag-options",
+            "tag-option",
+            "Search imported tags",
+            "Top tags and search results include imported media only.",
+            "Captured dates are available only for imports made after this feature was added",
+            "library-search-workspace",
+            "filter-sidebar",
+            "filter-disclosure",
+            "search_dates_expanded",
+            "search_media_expanded",
+            "search_tags_expanded",
+            "library-action-trigger",
+            "Library actions",
+            "library-action-popover",
+            "Applied filters",
+            "applied-filter-chip",
+            "Clear all",
         ] {
             assert!(source.contains(hook), "missing library-search hook: {hook}");
+        }
+        let home_source = source
+            .split("} else if step() == \"home\"")
+            .nth(1)
+            .and_then(|branch| branch.split("} else if step() == \"settings\"").next())
+            .expect("home branch must exist");
+        for removed_text in [
+            "LIBRARY SEARCH",
+            "Browse imported copies. Originals remain untouched.",
+            "Date to search",
+        ] {
+            assert!(
+                !home_source.contains(removed_text),
+                "removed library-search header text remains: {removed_text}"
+            );
+        }
+        for rule in [
+            ".library-search-workspace { display: grid; grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr);",
+            ".filter-sidebar { grid-column: 1; grid-row: 1; display: grid;",
+            ".library-results { grid-column: 2;",
+            ".library-action-popover { position: absolute;",
+            ".applied-filter-bar { min-height:",
+            ".media-type-options { gap:",
+            ".filter-section-content label.media-type-option { display: flex;",
+            ".filter-section-content input[type=\"checkbox\"] { width: 1rem;",
+            ".tag-options { display: flex; flex-wrap: wrap; gap: .35rem;",
+            ".tag-option:hover, .tag-option:focus-visible, .tag-option[aria-pressed=\"true\"]",
+            ".filter-disclosure:focus-visible,",
+            ".library-search-workspace { grid-template-columns: 1fr; }",
+        ] {
+            assert!(
+                STYLES.contains(rule),
+                "missing library-search style: {rule}"
+            );
         }
     }
 
