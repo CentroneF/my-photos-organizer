@@ -296,25 +296,25 @@ No catalogue migration is expected: imported/captured dates and media types alre
 
 #### Automated
 
-- [x] 2.1 Add the dual-range native search request, validation, AND predicates, and encrypted-catalogue coverage
-- [x] 2.2 Wire four date controls and their applied-filter chips to the synchronized search command
-- [x] 2.3 Run `cargo test --workspace` and `cargo check --workspace`
+- [x] 2.1 Add the dual-range native search request, validation, AND predicates, and encrypted-catalogue coverage — 2cc8f6b
+- [x] 2.2 Wire four date controls and their applied-filter chips to the synchronized search command — 2cc8f6b
+- [x] 2.3 Run `cargo test --workspace` and `cargo check --workspace` — 2cc8f6b
 
 #### Manual
 
-- [x] 2.4 Verify independent and combined date ranges, chip removal, and legacy captured-date behavior
+- [x] 2.4 Verify independent and combined date ranges, chip removal, and legacy captured-date behavior — 2cc8f6b
 
 ### Phase 3: Checkbox media-type filtering
 
 #### Automated
 
-- [ ] 3.1 Add multi-type native search semantics and encrypted-catalogue coverage
-- [ ] 3.2 Replace the media selector with checkbox controls, applied-filter behavior, responsive styles, and source coverage
-- [ ] 3.3 Run `cargo test --workspace` and `cargo check --workspace`
+- [x] 3.1 Add multi-type native search semantics and encrypted-catalogue coverage
+- [x] 3.2 Replace the media selector with checkbox controls, applied-filter behavior, responsive styles, and source coverage
+- [x] 3.3 Run `cargo test --workspace` and `cargo check --workspace`
 
 #### Manual
 
-- [ ] 3.4 Verify image/video toggles, explicit no-results behavior, Clear all, and chip removal
+- [x] 3.4 Verify image/video toggles, explicit no-results behavior, Clear all, and chip removal
 
 ### Phase 4: Frequency-ranked tag discovery
 

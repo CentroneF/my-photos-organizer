@@ -15,12 +15,13 @@ pub struct SearchLibraryRequest {
     pub imported_end_date: Option<String>,
     pub captured_start_date: Option<String>,
     pub captured_end_date: Option<String>,
-    pub media_type: Option<MediaType>,
+    #[serde(default = "default_media_types")]
+    pub media_types: Vec<MediaType>,
     #[serde(default)]
     pub tags: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, Clone, Copy)]
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum MediaType {
     Image,
@@ -34,6 +35,20 @@ impl MediaType {
             Self::Video => "video",
         }
     }
+}
+
+fn default_media_types() -> Vec<MediaType> {
+    vec![MediaType::Image, MediaType::Video]
+}
+
+fn normalize_media_types(media_types: Vec<MediaType>) -> Vec<MediaType> {
+    let mut normalized = Vec::new();
+    for media_type in media_types {
+        if !normalized.contains(&media_type) {
+            normalized.push(media_type);
+        }
+    }
+    normalized
 }
 
 #[derive(Debug, Serialize)]
@@ -107,7 +122,7 @@ pub fn search_library(
     let captured_start_date = validate_date(request.captured_start_date.as_deref())?;
     let captured_end_date = validate_date(request.captured_end_date.as_deref())?;
     validate_date_range(captured_start_date.as_deref(), captured_end_date.as_deref())?;
-    let media_type = request.media_type.map(MediaType::as_str);
+    let media_types = normalize_media_types(request.media_types);
     let tags = normalize_tags(&request.tags);
     let items = library::with_catalogue(|connection, root| {
         query_imported_items(
@@ -116,7 +131,7 @@ pub fn search_library(
             imported_end_date.as_deref(),
             captured_start_date.as_deref(),
             captured_end_date.as_deref(),
-            media_type,
+            &media_types,
             &tags,
         )
         .map(|items| (items, root.to_path_buf()))
@@ -153,12 +168,22 @@ fn query_imported_items(
     imported_end: Option<&str>,
     captured_start: Option<&str>,
     captured_end: Option<&str>,
-    media_type: Option<&str>,
+    media_types: &[MediaType],
     tags: &[String],
 ) -> Result<Vec<CatalogueItem>, SearchError> {
-    let mut sql = "SELECT d.candidate_id, d.destination_path, c.media_type, d.effective_import_date, d.original_media_date FROM item_decisions d JOIN review_candidates c ON c.id = d.candidate_id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND d.replaced_by_candidate_id IS NULL AND (?1 IS NULL OR d.effective_import_date >= ?1) AND (?2 IS NULL OR d.effective_import_date <= ?2) AND (?3 IS NULL OR d.original_media_date >= ?3) AND (?4 IS NULL OR d.original_media_date <= ?4) AND (?5 IS NULL OR c.media_type = ?5)".to_owned();
+    if media_types.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut sql = "SELECT d.candidate_id, d.destination_path, c.media_type, d.effective_import_date, d.original_media_date FROM item_decisions d JOIN review_candidates c ON c.id = d.candidate_id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND d.replaced_by_candidate_id IS NULL AND (?1 IS NULL OR d.effective_import_date >= ?1) AND (?2 IS NULL OR d.effective_import_date <= ?2) AND (?3 IS NULL OR d.original_media_date >= ?3) AND (?4 IS NULL OR d.original_media_date <= ?4) AND c.media_type IN (".to_owned();
+    for index in 0..media_types.len() {
+        if index > 0 {
+            sql.push_str(", ");
+        }
+        sql.push_str(&format!("?{}", index + 5));
+    }
+    sql.push(')');
     for index in 0..tags.len() {
-        sql.push_str(&format!(" AND EXISTS (SELECT 1 FROM candidate_tags ct JOIN tags t ON t.id = ct.tag_id WHERE ct.candidate_id = d.candidate_id AND t.normalized_name = ?{})", index + 6));
+        sql.push_str(&format!(" AND EXISTS (SELECT 1 FROM candidate_tags ct JOIN tags t ON t.id = ct.tag_id WHERE ct.candidate_id = d.candidate_id AND t.normalized_name = ?{})", index + 5 + media_types.len()));
     }
     sql.push_str(" ORDER BY d.effective_import_date DESC, d.candidate_id ASC");
     let mut statement = connection.prepare(&sql).map_err(database_error)?;
@@ -167,8 +192,12 @@ fn query_imported_items(
         imported_end.map(str::to_owned).into(),
         captured_start.map(str::to_owned).into(),
         captured_end.map(str::to_owned).into(),
-        media_type.map(str::to_owned).into(),
     ];
+    values.extend(
+        media_types
+            .iter()
+            .map(|media_type| Value::from(media_type.as_str().to_owned())),
+    );
     values.extend(tags.iter().cloned().map(Value::from));
     let rows = statement
         .query_map(params_from_iter(values), |row| {
@@ -382,7 +411,7 @@ mod tests {
                 Some("2026-08-20"),
                 None,
                 None,
-                Some("image"),
+                &[MediaType::Image],
                 &[],
             )
         })
@@ -397,7 +426,7 @@ mod tests {
                 None,
                 Some("2020-07-14"),
                 Some("2020-07-14"),
-                None,
+                &[MediaType::Image, MediaType::Video],
                 &["summer".into(), "family".into()],
             )
         })
@@ -411,7 +440,7 @@ mod tests {
                 Some("2026-08-20"),
                 Some("2020-07-14"),
                 Some("2020-07-14"),
-                None,
+                &[MediaType::Image, MediaType::Video],
                 &[],
             )
         })
@@ -425,7 +454,7 @@ mod tests {
                 Some("2026-08-21"),
                 Some("2020-01-01"),
                 Some("2026-12-31"),
-                None,
+                &[MediaType::Image, MediaType::Video],
                 &[],
             )
         })
@@ -455,6 +484,52 @@ mod tests {
             recent_library_tags().unwrap().tags,
             ["family", "summer"],
             "recent review tags are imported-only and deterministically ordered"
+        );
+        library::lock_library();
+    }
+
+    #[test]
+    fn media_type_selection_supports_each_type_both_duplicates_and_empty() {
+        let _session_guard = library::test_session_guard();
+        let directory = tempdir().unwrap();
+        library::setup_library(library::SetupLibraryRequest {
+            folder_path: directory.path().display().to_string(),
+            password: "correct horse battery staple".into(),
+            password_confirmation: "correct horse battery staple".into(),
+            recovery_question: "pet".into(),
+            recovery_answer: "Mochi".into(),
+        })
+        .unwrap();
+        library::with_catalogue(|connection, _| {
+            connection.execute_batch("INSERT INTO review_sessions (id, source_path, state) VALUES (1, 'source', 'complete'); INSERT INTO review_candidates (id, session_id, relative_path, file_size, modified_at, media_type, decision) VALUES (1, 1, 'one.jpg', 1, 0, 'image', 'imported'), (2, 1, 'two.mp4', 1, 0, 'video', 'imported'); INSERT INTO item_decisions (candidate_id, decision, destination_path, effective_import_date) VALUES (1, 'imported', 'one.jpg', '2026-08-20'), (2, 'imported', 'two.mp4', '2026-08-21');").map_err(database_error)?;
+            Ok::<(), SearchError>(())
+        }).unwrap();
+
+        for (selection, expected_ids) in [
+            (vec![MediaType::Image], vec![1]),
+            (vec![MediaType::Video], vec![2]),
+            (vec![MediaType::Image, MediaType::Video], vec![2, 1]),
+            (vec![MediaType::Image, MediaType::Image], vec![1]),
+            (vec![], vec![]),
+        ] {
+            let selected = normalize_media_types(selection);
+            let ids = library::with_catalogue(|connection, _| {
+                query_imported_items(connection, None, None, None, None, &selected, &[]).map(
+                    |items| {
+                        items
+                            .into_iter()
+                            .map(|item| item.candidate_id)
+                            .collect::<Vec<_>>()
+                    },
+                )
+            })
+            .unwrap();
+            assert_eq!(ids, expected_ids);
+        }
+
+        assert_eq!(
+            default_media_types(),
+            vec![MediaType::Image, MediaType::Video]
         );
         library::lock_library();
     }
