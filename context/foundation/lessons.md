@@ -43,3 +43,10 @@
 - **Problem**: I might lose progress.
 - **Rule**: Every time you commit, push.
 - **Applies to**: N/A
+
+## Do Not Build DMG Files
+
+- **Context**: do not build the dmg file
+- **Problem**: it keeps failing
+- **Rule**: DO NOT BUILD THE DMG FILE
+- **Applies to**: all

@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeSet,
     fs,
-    io::{Read, Write},
+    io::{BufReader, Read, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -19,7 +19,6 @@ use crate::search;
 const CONTENT_FINGERPRINT_ALGORITHM: &str = "blake3-256-v1";
 const EXACT_HISTORY_LIMIT: usize = 3;
 const PERCEPTUAL_HASH_ALGORITHM: &str = "dhash-64-v1";
-const SIMILARITY_LIMIT: usize = 3;
 const SIMILARITY_THRESHOLD: u32 = 10;
 const MAX_DECODED_PIXELS: u64 = 40_000_000;
 
@@ -41,6 +40,7 @@ pub struct ReviewItem {
     pub media_type: Option<String>,
     pub effective_import_date: Option<String>,
     pub date_origin: Option<String>,
+    pub metadata: ReviewMetadata,
     pub tags: Vec<String>,
     pub preview_url: Option<String>,
     pub exact_matches: Vec<ExactMatch>,
@@ -49,6 +49,27 @@ pub struct ReviewItem {
     pub imported_count: u64,
     pub skipped_count: u64,
     pub message: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewMetadata {
+    pub file_size_bytes: Option<u64>,
+    pub created_at: Option<String>,
+    pub modified_at: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub captured_at: Option<String>,
+    pub camera: Option<String>,
+    pub orientation: Option<String>,
+    pub gps: Option<GpsCoordinates>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpsCoordinates {
+    pub latitude: f64,
+    pub longitude: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -65,6 +86,7 @@ pub struct ExactMatch {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SimilarMatch {
+    pub candidate_id: i64,
     pub filename: String,
     pub decided_at: String,
     pub tags: Vec<String>,
@@ -81,6 +103,14 @@ pub struct DecideRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ImportRequest {
     pub candidate_id: i64,
+    pub tags: Vec<String>,
+    pub effective_import_date: String,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubstituteRequest {
+    pub candidate_id: i64,
+    pub replaced_candidate_id: i64,
     pub tags: Vec<String>,
     pub effective_import_date: String,
 }
@@ -359,6 +389,19 @@ pub fn next_review_item(app: tauri::AppHandle) -> Result<ReviewItem, ReviewError
                 ))
             }
         };
+        let metadata = review_metadata(&path);
+        if stable_metadata(&path) != Ok((file_size, modified_at)) {
+            return Ok(unavailable_item(
+                candidate_id,
+                relative_path,
+                filename,
+                media_type,
+                date,
+                origin,
+                tags,
+                "This source item changed while its details were read. Refresh the review before deciding; no decision was made.".into(),
+            ));
+        }
         Ok(ReviewItem {
             state: "item",
             candidate_id: Some(candidate_id),
@@ -367,6 +410,7 @@ pub fn next_review_item(app: tauri::AppHandle) -> Result<ReviewItem, ReviewError
             media_type: Some(media_type),
             effective_import_date: Some(date),
             date_origin: Some(origin),
+            metadata,
             tags,
             preview_url,
             exact_matches,
@@ -391,6 +435,7 @@ pub fn skip_review_item(request: DecideRequest) -> Result<DecisionResult, Review
             None,
             None,
             None,
+            None,
         )?;
         Ok(DecisionResult {
             decision: "skipped",
@@ -406,6 +451,7 @@ pub fn import_review_item(request: ImportRequest) -> Result<DecisionResult, Revi
         let source = Path::new(&source_path).join(relative_path);
         readable_file(&source).map_err(|message| error("candidate_unavailable", message))?;
         let original_date = effective_date(&source);
+        let metadata = review_metadata(&source);
         let destination = publish_copy(&source, library_path, &date)?;
         if let Err(record_error) = record_decision(
             connection,
@@ -417,6 +463,7 @@ pub fn import_review_item(request: ImportRequest) -> Result<DecisionResult, Revi
             original_date
                 .as_ref()
                 .map(|(date, origin)| (date.as_str(), origin.as_str())),
+            metadata.gps.as_ref(),
         ) {
             return Err(error("post_copy_catalogue_failure", format!("The file was copied to {} but its catalogue decision could not be saved. Do not import it again; reopen the library and recover this item. ({})", destination.display(), record_error.message)));
         }
@@ -426,6 +473,147 @@ pub fn import_review_item(request: ImportRequest) -> Result<DecisionResult, Revi
             message: "Imported a new copy. The original file was not changed.".into(),
         })
     })
+}
+
+pub fn substitute_review_item(request: SubstituteRequest) -> Result<DecisionResult, ReviewError> {
+    let date = validate_date(&request.effective_import_date)?;
+    if request.candidate_id == request.replaced_candidate_id {
+        return Err(error(
+            "invalid_replacement",
+            "Choose a different imported item to substitute.",
+        ));
+    }
+    library::with_catalogue(|connection, library_path| {
+        let (source_path, relative_path) = pending_candidate(connection, request.candidate_id)?;
+        let source = Path::new(&source_path).join(relative_path);
+        readable_file(&source).map_err(|message| error("candidate_unavailable", message))?;
+        let old_path: String = connection.query_row(
+            "SELECT destination_path FROM item_decisions WHERE candidate_id = ?1 AND decision = 'imported' AND destination_path IS NOT NULL AND replaced_by_candidate_id IS NULL",
+            [request.replaced_candidate_id],
+            |row| row.get(0),
+        ).map_err(|value| match value {
+            rusqlite::Error::QueryReturnedNoRows => error("replacement_unavailable", "The selected imported item is no longer available for substitution."),
+            other => database_error(other),
+        })?;
+        let library_root = library_path.canonicalize().map_err(|_| {
+            error(
+                "library_unavailable",
+                "The protected library is unavailable.",
+            )
+        })?;
+        let stored_old = PathBuf::from(old_path);
+        let old_metadata = fs::symlink_metadata(&stored_old).map_err(|_| {
+            error(
+                "replacement_unavailable",
+                "The selected managed copy is missing; no files were changed.",
+            )
+        })?;
+        if old_metadata.file_type().is_symlink() || !old_metadata.is_file() {
+            return Err(error(
+                "unsafe_replacement",
+                "The selected managed copy is not a safe file inside this library.",
+            ));
+        }
+        let old = stored_old.canonicalize().map_err(|_| {
+            error(
+                "replacement_unavailable",
+                "The selected managed copy is missing; no files were changed.",
+            )
+        })?;
+        if !old.starts_with(&library_root) {
+            return Err(error(
+                "unsafe_replacement",
+                "The selected managed copy is not a safe file inside this library.",
+            ));
+        }
+        readable_file(&old).map_err(|_| {
+            error(
+                "replacement_unavailable",
+                "The selected managed copy cannot be read safely.",
+            )
+        })?;
+        let original_date = effective_date(&source);
+        let metadata = review_metadata(&source);
+        let incoming = publish_copy(&source, library_path, &date)?;
+        let recovery = old.with_file_name(format!(
+            ".{}.photo-handler-recovery-{}",
+            old.file_name().unwrap_or_default().to_string_lossy(),
+            random_suffix()
+        ));
+        fs::hard_link(&old, &recovery).map_err(|_| error("recovery_link_failed", "Could not create a recovery copy for the managed item. The new copy was preserved for recovery."))?;
+        let result = record_substitution(
+            connection,
+            &request,
+            &incoming,
+            &old,
+            &recovery,
+            &date,
+            original_date
+                .as_ref()
+                .map(|(d, o)| (d.as_str(), o.as_str())),
+            metadata.gps.as_ref(),
+        );
+        if let Err(record_error) = result {
+            return Err(error(
+                record_error.code,
+                format!(
+                    "{} The new copy and recovery copy were preserved at {}.",
+                    record_error.message,
+                    recovery.display()
+                ),
+            ));
+        }
+        Ok(DecisionResult { decision: "substituted", destination_path: Some(incoming.display().to_string()), message: "Substituted the managed copy and transferred its tags. The original source file was not changed.".into() })
+    })
+}
+
+fn record_substitution(
+    connection: &Connection,
+    request: &SubstituteRequest,
+    destination: &Path,
+    old: &Path,
+    recovery: &Path,
+    date: &str,
+    original_date: Option<(&str, &str)>,
+    gps: Option<&GpsCoordinates>,
+) -> Result<(), ReviewError> {
+    pending_candidate(connection, request.candidate_id)?;
+    let transaction = connection.unchecked_transaction().map_err(database_error)?;
+    let mut tags = request.tags.clone();
+    let old_tags: Vec<String> = transaction.prepare("SELECT t.normalized_name FROM tags t JOIN candidate_tags ct ON ct.tag_id = t.id WHERE ct.candidate_id = ?1").map_err(database_error)?
+        .query_map([request.replaced_candidate_id], |row| row.get(0)).map_err(database_error)?
+        .collect::<Result<_, _>>().map_err(database_error)?;
+    tags.extend(old_tags);
+    for tag in normalize_tags(&tags) {
+        transaction.execute("INSERT INTO tags (normalized_name) VALUES (?1) ON CONFLICT(normalized_name) DO NOTHING", [&tag]).map_err(database_error)?;
+        transaction.execute("INSERT INTO candidate_tags (candidate_id, tag_id) SELECT ?1, id FROM tags WHERE normalized_name = ?2 ON CONFLICT(candidate_id, tag_id) DO NOTHING", params![request.candidate_id, tag]).map_err(database_error)?;
+    }
+    let gps_json = gps.map(serde_json::to_string).transpose().map_err(|_| {
+        error(
+            "gps_serialization_failed",
+            "Could not save the imported media GPS coordinates.",
+        )
+    })?;
+    transaction
+        .execute(
+            "UPDATE review_candidates SET decision = 'imported' WHERE id = ?1 AND decision IS NULL",
+            [request.candidate_id],
+        )
+        .map_err(database_error)?;
+    transaction.execute("INSERT INTO item_decisions (candidate_id, decision, destination_path, effective_import_date, date_origin, original_media_date, original_date_origin, gps_json) VALUES (?1, 'imported', ?2, ?3, 'user', ?4, ?5, ?6)", params![request.candidate_id, destination.display().to_string(), date, original_date.map(|(d, _)| d), original_date.map(|(_, o)| o), gps_json]).map_err(database_error)?;
+    transaction.execute("UPDATE item_decisions SET replaced_by_candidate_id = ?1 WHERE candidate_id = ?2 AND decision = 'imported' AND replaced_by_candidate_id IS NULL", params![request.candidate_id, request.replaced_candidate_id]).map_err(database_error)?;
+    transaction.execute("UPDATE review_sessions SET state = 'complete' WHERE id = (SELECT session_id FROM review_candidates WHERE id = ?1) AND NOT EXISTS (SELECT 1 FROM review_candidates WHERE session_id = (SELECT session_id FROM review_candidates WHERE id = ?1) AND decision IS NULL)", [request.candidate_id]).map_err(database_error)?;
+    fs::remove_file(old).map_err(|_| {
+        error(
+            "replacement_cleanup_failed",
+            "Could not remove the old managed copy; the replacement was not recorded.",
+        )
+    })?;
+    if let Err(commit_error) = transaction.commit() {
+        let _ = fs::hard_link(recovery, old);
+        return Err(database_error(commit_error));
+    }
+    Ok(())
 }
 
 fn completion_item(connection: &Connection) -> Result<ReviewItem, ReviewError> {
@@ -464,6 +652,7 @@ fn completion_item_for_session(
             media_type: None,
             effective_import_date: None,
             date_origin: None,
+            metadata: ReviewMetadata::default(),
             tags: vec![],
             preview_url: None,
             exact_matches: vec![],
@@ -489,6 +678,7 @@ fn empty_item() -> ReviewItem {
         media_type: None,
         effective_import_date: None,
         date_origin: None,
+        metadata: ReviewMetadata::default(),
         tags: vec![],
         preview_url: None,
         exact_matches: vec![],
@@ -518,6 +708,7 @@ fn unavailable_item(
         media_type: Some(media_type),
         effective_import_date: Some(date),
         date_origin: Some(origin),
+        metadata: ReviewMetadata::default(),
         tags,
         preview_url: None,
         exact_matches: vec![],
@@ -582,6 +773,119 @@ fn stable_metadata(path: &Path) -> Result<(i64, i64), String> {
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or(0);
     Ok((metadata.len() as i64, modified))
+}
+
+fn review_metadata(path: &Path) -> ReviewMetadata {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() && !metadata.file_type().is_symlink() => {
+            metadata
+        }
+        _ => return ReviewMetadata::default(),
+    };
+    let file_size_bytes = Some(metadata.len());
+    let created_at = metadata.created().ok().map(format_local_timestamp);
+    let modified_at = metadata.modified().ok().map(format_local_timestamp);
+    let (width, height) = image_dimensions(path);
+    let (captured_at, camera, orientation, gps) = exif_metadata(path);
+    ReviewMetadata {
+        file_size_bytes,
+        created_at,
+        modified_at,
+        width,
+        height,
+        captured_at,
+        camera,
+        orientation,
+        gps,
+    }
+}
+
+fn format_local_timestamp(value: SystemTime) -> String {
+    DateTime::<Local>::from(value)
+        .format("%Y-%m-%d %H:%M:%S %Z")
+        .to_string()
+}
+
+fn image_dimensions(path: &Path) -> (Option<u32>, Option<u32>) {
+    image::ImageReader::open(path)
+        .ok()
+        .and_then(|reader| reader.with_guessed_format().ok())
+        .and_then(|reader| reader.into_dimensions().ok())
+        .map(|(width, height)| (Some(width), Some(height)))
+        .unwrap_or((None, None))
+}
+
+fn exif_metadata(
+    path: &Path,
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<GpsCoordinates>,
+) {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return (None, None, None, None),
+    };
+    let exif = match exif::Reader::new().read_from_container(&mut BufReader::new(file)) {
+        Ok(exif) => exif,
+        Err(_) => return (None, None, None, None),
+    };
+    let value = |tag| {
+        exif.get_field(tag, exif::In::PRIMARY)
+            .map(|field| field.display_value().with_unit(&exif).to_string())
+            .filter(|value| !value.trim().is_empty())
+    };
+    let captured_at = value(exif::Tag::DateTimeOriginal)
+        .or_else(|| value(exif::Tag::DateTime))
+        .or_else(|| value(exif::Tag::DateTimeDigitized));
+    let make = value(exif::Tag::Make);
+    let model = value(exif::Tag::Model);
+    let camera = match (make, model) {
+        (Some(make), Some(model)) if model.starts_with(&make) => Some(model),
+        (Some(make), Some(model)) => Some(format!("{make} {model}")),
+        (Some(make), None) | (None, Some(make)) => Some(make),
+        (None, None) => None,
+    };
+    let coordinate = |coordinate_tag, reference_tag, negative_reference| {
+        let field = exif.get_field(coordinate_tag, exif::In::PRIMARY)?;
+        let exif::Value::Rational(values) = &field.value else {
+            return None;
+        };
+        let reference = value(reference_tag);
+        gps_decimal(values, reference.as_deref(), negative_reference)
+    };
+    let gps = match (
+        coordinate(exif::Tag::GPSLatitude, exif::Tag::GPSLatitudeRef, 'S'),
+        coordinate(exif::Tag::GPSLongitude, exif::Tag::GPSLongitudeRef, 'W'),
+    ) {
+        (Some(latitude), Some(longitude)) => Some(GpsCoordinates {
+            latitude,
+            longitude,
+        }),
+        _ => None,
+    };
+    (captured_at, camera, value(exif::Tag::Orientation), gps)
+}
+
+fn gps_decimal(
+    values: &[exif::Rational],
+    reference: Option<&str>,
+    negative_reference: char,
+) -> Option<f64> {
+    let components = values.get(..3)?;
+    let decimal =
+        components
+            .iter()
+            .zip([1.0, 60.0, 3600.0])
+            .try_fold(0.0, |total, (value, divisor)| {
+                (value.denom != 0).then(|| total + value.num as f64 / value.denom as f64 / divisor)
+            })?;
+    let is_negative = reference
+        .map(str::trim)
+        .map(|value| value.eq_ignore_ascii_case(&negative_reference.to_string()))
+        .unwrap_or(false);
+    Some(if is_negative { -decimal } else { decimal })
 }
 
 fn exact_matches(
@@ -706,7 +1010,34 @@ fn similar_matches(
     active_id: i64,
     hash: u64,
 ) -> Result<Vec<SimilarMatch>, ReviewError> {
-    let mut statement = connection.prepare("SELECT c.id, c.relative_path, d.decided_at, d.destination_path, c.perceptual_hash_value FROM review_candidates c JOIN item_decisions d ON d.candidate_id = c.id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND c.perceptual_hash_algorithm = ?1 AND c.perceptual_hash_threshold = ?2 AND c.id != ?3 AND c.content_fingerprint_value != (SELECT content_fingerprint_value FROM review_candidates WHERE id = ?3) ORDER BY d.decided_at DESC, c.id").map_err(database_error)?;
+    let candidates = similar_match_candidates(connection, active_id, hash)?;
+    Ok(candidates
+        .into_iter()
+        .map(|(_, id, relative_path, decided_at, destination)| {
+            Ok::<_, ReviewError>(SimilarMatch {
+                candidate_id: id,
+                filename: Path::new(&relative_path)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+                decided_at,
+                tags: candidate_tags(connection, id)?,
+                preview_url: search::safe_preview_url(app, root, Path::new(&destination)).0,
+                similarity_label: "Possible similar picture",
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?)
+}
+
+type SimilarCandidate = (u32, i64, String, String, String);
+
+fn similar_match_candidates(
+    connection: &Connection,
+    active_id: i64,
+    hash: u64,
+) -> Result<Vec<SimilarCandidate>, ReviewError> {
+    let mut statement = connection.prepare("SELECT c.id, c.relative_path, d.decided_at, d.destination_path, c.perceptual_hash_value FROM review_candidates c JOIN item_decisions d ON d.candidate_id = c.id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND d.replaced_by_candidate_id IS NULL AND c.perceptual_hash_algorithm = ?1 AND c.perceptual_hash_threshold = ?2 AND c.id != ?3 AND c.content_fingerprint_value != (SELECT content_fingerprint_value FROM review_candidates WHERE id = ?3) ORDER BY d.decided_at DESC, c.id").map_err(database_error)?;
     let rows = statement
         .query_map(
             params![
@@ -735,29 +1066,8 @@ fn similar_matches(
         }
         candidates.push((distance, id, relative_path, decided_at, destination));
     }
-    candidates.sort_by(|left, right| {
-        left.0
-            .cmp(&right.0)
-            .then_with(|| right.3.cmp(&left.3))
-            .then_with(|| left.1.cmp(&right.1))
-    });
-    Ok(candidates
-        .into_iter()
-        .take(SIMILARITY_LIMIT)
-        .map(|(_, id, relative_path, decided_at, destination)| {
-            Ok::<_, ReviewError>(SimilarMatch {
-                filename: Path::new(&relative_path)
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned(),
-                decided_at,
-                tags: candidate_tags(connection, id)?,
-                preview_url: search::safe_preview_url(app, root, Path::new(&destination)).0,
-                similarity_label: "Possible similar picture",
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?)
+    candidates.sort_by(|left, right| right.3.cmp(&left.3).then_with(|| left.1.cmp(&right.1)));
+    Ok(candidates)
 }
 fn review_state(connection: &Connection) -> Result<ReviewState, ReviewError> {
     match connection.query_row("SELECT source_path, state, (SELECT count(*) FROM review_candidates WHERE session_id = review_sessions.id AND decision IS NULL) FROM review_sessions ORDER BY id DESC LIMIT 1", [], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, u64>(2)?))) { Ok((source_path, state, candidate_count)) => Ok(ReviewState { state: if state == "complete" { "complete" } else { "resumable" }, source_path: Some(source_path), candidate_count, message: if state == "complete" { "Resume to check this source for newly added supported files. Originals are never modified.".into() } else { "Resume the safe read-only review. Originals are never modified.".into() } }), Err(rusqlite::Error::QueryReturnedNoRows) => Ok(ReviewState { state: "none", source_path: None, candidate_count: 0, message: "No unfinished review is available.".into() }), Err(error) => Err(database_error(error)) }
@@ -776,6 +1086,7 @@ fn record_decision(
     destination: Option<&Path>,
     date: Option<&str>,
     original_date: Option<(&str, &str)>,
+    gps: Option<&GpsCoordinates>,
 ) -> Result<(), ReviewError> {
     pending_candidate(connection, candidate_id)?;
     let transaction = connection.unchecked_transaction().map_err(database_error)?;
@@ -789,7 +1100,13 @@ fn record_decision(
             params![decision, candidate_id],
         )
         .map_err(database_error)?;
-    transaction.execute("INSERT INTO item_decisions (candidate_id, decision, destination_path, effective_import_date, date_origin, original_media_date, original_date_origin) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)", params![candidate_id, decision, destination.map(|path| path.display().to_string()), date, if date.is_some() { Some("user") } else { None }, original_date.map(|(date, _)| date), original_date.map(|(_, origin)| origin)]).map_err(database_error)?;
+    let gps_json = gps.map(serde_json::to_string).transpose().map_err(|_| {
+        error(
+            "gps_serialization_failed",
+            "Could not save the imported media GPS coordinates.",
+        )
+    })?;
+    transaction.execute("INSERT INTO item_decisions (candidate_id, decision, destination_path, effective_import_date, date_origin, original_media_date, original_date_origin, gps_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)", params![candidate_id, decision, destination.map(|path| path.display().to_string()), date, if date.is_some() { Some("user") } else { None }, original_date.map(|(date, _)| date), original_date.map(|(_, origin)| origin), gps_json]).map_err(database_error)?;
     transaction
         .execute(
             "UPDATE review_sessions SET state = 'complete' WHERE id = (SELECT session_id FROM review_candidates WHERE id = ?1) AND NOT EXISTS (SELECT 1 FROM review_candidates WHERE session_id = (SELECT session_id FROM review_candidates WHERE id = ?1) AND decision IS NULL)",
@@ -1116,6 +1433,37 @@ mod tests {
         assert_eq!(candidates[0].relative_path, "nested/a.JPG");
         assert_eq!(fs::read(&photo).unwrap(), before);
     }
+
+    #[test]
+    fn metadata_is_best_effort_and_never_changes_the_source() {
+        let source = tempdir().unwrap();
+        let file = source.path().join("metadata-poor.jpg");
+        fs::write(&file, b"not a decodable image").unwrap();
+        let before = fs::read(&file).unwrap();
+
+        let metadata = review_metadata(&file);
+
+        assert_eq!(metadata.file_size_bytes, Some(before.len() as u64));
+        assert!(metadata.modified_at.is_some());
+        assert_eq!(metadata.width, None);
+        assert_eq!(metadata.height, None);
+        assert_eq!(metadata.camera, None);
+        assert_eq!(metadata.gps, None);
+        assert_eq!(fs::read(&file).unwrap(), before);
+    }
+
+    #[test]
+    fn gps_coordinates_convert_exif_dms_to_signed_decimal_degrees() {
+        let latitude = vec![(52, 1).into(), (13, 1).into(), (3000, 100).into()];
+        let longitude = vec![(21, 1).into(), (0, 1).into(), (0, 1).into()];
+
+        assert_eq!(gps_decimal(&latitude, Some("N"), 'S'), Some(52.225));
+        assert_eq!(gps_decimal(&latitude, Some("S"), 'S'), Some(-52.225));
+        assert_eq!(gps_decimal(&longitude, Some("E"), 'W'), Some(21.0));
+        assert_eq!(gps_decimal(&longitude, Some("W"), 'W'), Some(-21.0));
+        assert_eq!(gps_decimal(&[(1, 0).into()], Some("N"), 'S'), None);
+    }
+
     #[test]
     fn normalizes_tags_and_validates_dates() {
         let _session_guard = library::test_session_guard();
@@ -1263,6 +1611,89 @@ mod tests {
         fs::write(&corrupt, b"not an image").unwrap();
         assert_eq!(perceptual_hash(&video).unwrap_err().0, "unsupported");
         assert_eq!(perceptual_hash(&corrupt).unwrap_err().0, "decode_failed");
+    }
+
+    #[test]
+    fn similar_matches_include_every_imported_candidate_newest_first() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE review_candidates (id INTEGER PRIMARY KEY, relative_path TEXT NOT NULL, perceptual_hash_algorithm TEXT, perceptual_hash_threshold INTEGER, perceptual_hash_value INTEGER, content_fingerprint_value BLOB);\
+             CREATE TABLE item_decisions (candidate_id INTEGER, decision TEXT, decided_at TEXT, destination_path TEXT, replaced_by_candidate_id INTEGER NULL);\
+             INSERT INTO review_candidates VALUES (1, 'active.jpg', 'dhash-64-v1', 10, 44, x'01'),\
+             (2, 'older.jpg', 'dhash-64-v1', 10, 44, x'02'),\
+             (3, 'same-time-higher-id.jpg', 'dhash-64-v1', 10, 44, x'02'),\
+             (4, 'skipped.jpg', 'dhash-64-v1', 10, 44, x'02'),\
+             (5, 'newest.jpg', 'dhash-64-v1', 10, 44, x'02'),\
+             (6, 'no-destination.jpg', 'dhash-64-v1', 10, 44, x'02');\
+             INSERT INTO item_decisions (candidate_id, decision, decided_at, destination_path) VALUES (2, 'imported', '2026-08-02 00:00:00', 'managed/older.jpg'),\
+             (3, 'imported', '2026-08-02 00:00:00', 'managed/same-time-higher-id.jpg'),\
+             (4, 'skipped', '2026-08-04 00:00:00', NULL),\
+             (5, 'imported', '2026-08-03 00:00:00', 'managed/newest.jpg'),\
+             (6, 'imported', '2026-08-05 00:00:00', NULL);",
+        ).unwrap();
+
+        let matches = similar_match_candidates(&connection, 1, 44).unwrap();
+        assert_eq!(
+            matches
+                .iter()
+                .map(|candidate| candidate.1)
+                .collect::<Vec<_>>(),
+            [5, 2, 3]
+        );
+        assert!(matches.iter().all(|candidate| !candidate.4.is_empty()));
+    }
+
+    #[test]
+    fn substitute_preserves_the_source_and_transfers_normalized_tags() {
+        let _session_guard = library::test_session_guard();
+        let library_dir = tempdir().unwrap();
+        let source_dir = tempdir().unwrap();
+        let source = source_dir.path().join("new.jpg");
+        fs::write(&source, b"new source bytes").unwrap();
+        library::setup_library(library::SetupLibraryRequest {
+            folder_path: library_dir.path().display().to_string(),
+            password: "correct horse battery staple".into(),
+            password_confirmation: "correct horse battery staple".into(),
+            recovery_question: "pet".into(),
+            recovery_answer: "Mochi".into(),
+        })
+        .unwrap();
+        let old = library_dir
+            .path()
+            .join("2026")
+            .join("2026-09-05")
+            .join("old.jpg");
+        fs::create_dir_all(old.parent().unwrap()).unwrap();
+        fs::write(&old, b"old managed bytes").unwrap();
+        library::with_catalogue(|connection, _| {
+            connection.execute_batch(&format!(
+                "INSERT INTO review_sessions (id, source_path, state) VALUES (1, '{}', 'active'); \
+                 INSERT INTO review_candidates (id, session_id, relative_path, file_size, modified_at, media_type) VALUES (1, 1, 'new.jpg', 16, 0, 'image'), (2, 1, 'old.jpg', 17, 0, 'image'); \
+                 INSERT INTO item_decisions (candidate_id, decision, destination_path) VALUES (2, 'imported', '{}'); \
+                 INSERT INTO tags (id, normalized_name) VALUES (1, 'old-tag'); \
+                 INSERT INTO candidate_tags (candidate_id, tag_id) VALUES (2, 1);",
+                source_dir.path().display(), old.display()
+            )).map_err(database_error)?;
+            Ok::<_, ReviewError>(())
+        }).unwrap();
+
+        substitute_review_item(SubstituteRequest {
+            candidate_id: 1,
+            replaced_candidate_id: 2,
+            tags: vec!["Current Tag".into(), "old-tag".into()],
+            effective_import_date: "2026-09-05".into(),
+        })
+        .unwrap();
+
+        assert_eq!(fs::read(&source).unwrap(), b"new source bytes");
+        assert!(!old.exists());
+        let (replacement, tags): (Option<i64>, Vec<String>) = library::with_catalogue(|connection, _| {
+            let replacement = connection.query_row("SELECT replaced_by_candidate_id FROM item_decisions WHERE candidate_id = 2", [], |row| row.get(0)).map_err(database_error)?;
+            Ok::<_, ReviewError>((replacement, candidate_tags(connection, 1)?))
+        }).unwrap();
+        assert_eq!(replacement, Some(1));
+        assert_eq!(tags, ["current tag", "old-tag"]);
+        library::lock_library();
     }
 
     #[test]
@@ -1488,9 +1919,9 @@ mod tests {
         let dates = library::with_catalogue(|connection, _| {
             connection
                 .query_row(
-                    "SELECT effective_import_date, original_media_date, original_date_origin FROM item_decisions",
+                    "SELECT effective_import_date, original_media_date, original_date_origin, gps_json FROM item_decisions",
                     [],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?)),
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, Option<String>>(3)?)),
                 )
                 .map_err(database_error)
         })
@@ -1498,6 +1929,72 @@ mod tests {
         assert_eq!(dates.0, "2026-08-28");
         assert_eq!(dates.1.as_deref(), Some("2020-07-14"));
         assert_eq!(dates.2.as_deref(), Some("metadata"));
+        assert_eq!(dates.3, None);
+        library::lock_library();
+    }
+
+    #[test]
+    fn imported_gps_coordinates_persist_across_catalogue_reopen() {
+        let _session_guard = library::test_session_guard();
+        let library_dir = tempdir().unwrap();
+        let source_dir = tempdir().unwrap();
+        fs::write(
+            source_dir.path().join("gps.jpg"),
+            b"GPS persistence fixture",
+        )
+        .unwrap();
+        library::setup_library(library::SetupLibraryRequest {
+            folder_path: library_dir.path().display().to_string(),
+            password: "correct horse battery staple".into(),
+            password_confirmation: "correct horse battery staple".into(),
+            recovery_question: "First pet?".into(),
+            recovery_answer: "Mochi".into(),
+        })
+        .unwrap();
+        start_review(&source_dir.path().display().to_string()).unwrap();
+        let candidate_id = library::with_catalogue(|connection, _| {
+            connection
+                .query_row("SELECT id FROM review_candidates", [], |row| row.get(0))
+                .map_err(database_error)
+        })
+        .unwrap();
+        let expected = GpsCoordinates {
+            latitude: 52.229_676,
+            longitude: 21.012_229,
+        };
+        library::with_catalogue(|connection, _| {
+            record_decision(
+                connection,
+                candidate_id,
+                "imported",
+                &[],
+                None,
+                None,
+                None,
+                Some(&expected),
+            )
+        })
+        .unwrap();
+        library::lock_library();
+        library::unlock_library(
+            &library_dir.path().display().to_string(),
+            library::UnlockLibraryRequest {
+                password: "correct horse battery staple".into(),
+            },
+        )
+        .unwrap();
+        let persisted = library::with_catalogue(|connection, _| {
+            connection
+                .query_row("SELECT gps_json FROM item_decisions", [], |row| {
+                    row.get::<_, Option<String>>(0)
+                })
+                .map_err(database_error)
+        })
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<GpsCoordinates>(persisted.as_deref().unwrap()).unwrap(),
+            expected
+        );
         library::lock_library();
     }
     #[test]

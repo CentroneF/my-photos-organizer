@@ -35,6 +35,13 @@ fn import_review_item(
 }
 
 #[tauri::command]
+fn substitute_review_item(
+    request: review::SubstituteRequest,
+) -> Result<review::DecisionResult, review::ReviewError> {
+    review::substitute_review_item(request)
+}
+
+#[tauri::command]
 fn search_library(
     app: tauri::AppHandle,
     request: search::SearchLibraryRequest,
@@ -47,6 +54,11 @@ fn suggest_library_tags(
     request: search::TagSuggestionRequest,
 ) -> Result<search::TagSuggestionResult, search::SearchError> {
     search::suggest_library_tags(request)
+}
+
+#[tauri::command]
+fn recent_library_tags() -> Result<search::RecentTagsResult, search::SearchError> {
+    search::recent_library_tags()
 }
 
 #[tauri::command]
@@ -243,8 +255,10 @@ pub fn run() {
             next_review_item,
             skip_review_item,
             import_review_item,
+            substitute_review_item,
             search_library,
             suggest_library_tags,
+            recent_library_tags,
             lock_library,
             open_library_folder,
             clean_library,
