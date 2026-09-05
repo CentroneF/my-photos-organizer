@@ -673,7 +673,7 @@ pub fn App() -> Element {
                 directory: true,
                 multiple: false,
                 recursive: false,
-                title: "Choose a Photo Handler library folder",
+                title: "Choose a Photo Organizer library folder",
             },
         };
         let Ok(args) = serde_wasm_bindgen::to_value(&picker) else {
@@ -1262,7 +1262,7 @@ pub fn App() -> Element {
                 aside { class: "brand-panel",
                 div { class: "brand-mark", "PH" }
                 div {
-                    p { class: "eyebrow", "PHOTO HANDLER" }
+                    p { class: "eyebrow", "PHOTO ORGANIZER" }
                     h1 { "Your memories, indexed privately." }
                     p { class: "brand-copy", "A local catalogue that keeps every original exactly where you put it." }
                 }
@@ -1280,7 +1280,7 @@ pub fn App() -> Element {
                         p { class: "lede", "Start by choosing a folder. We’ll inspect it without changing anything, then guide you to the right next step." }
                         button { class: "folder-picker", r#type: "button", onclick: choose_folder, disabled: busy(),
                             span { class: "folder-icon", "⌑" }
-                            span { strong { if busy() { "Inspecting folder…" } else { "Choose a folder" } } small { "Empty folder or an existing Photo Handler library" } }
+                            span { strong { if busy() { "Inspecting folder…" } else { "Choose a folder" } } small { "Empty folder or an existing Photo Organizer library" } }
                             span { class: "arrow", "→" }
                         }
                     } else if step() == "loading" {
@@ -1289,7 +1289,7 @@ pub fn App() -> Element {
                         p { class: "lede", "We are checking only the remembered local library location." }
                     } else if step() == "new" {
                         h2 { "Protect your new library" }
-                        p { class: "lede", "This folder has no Photo Handler configuration yet. Add protection details to create one." }
+                        p { class: "lede", "This folder has no Photo Organizer configuration yet. Add protection details to create one." }
                         div { class: "folder-summary", span { "Selected folder" } strong { "{folder}" } button { r#type: "button", onclick: choose_another, "Change" } }
                         form { class: "setup-form", onsubmit: create,
                             div { class: "field-pair",
@@ -1337,7 +1337,7 @@ pub fn App() -> Element {
                     } else if step() == "stale" {
                         p { class: "step-label", "LIBRARY UNAVAILABLE" }
                         h2 { "Your remembered library is unavailable." }
-                        p { class: "lede", "It may have moved or be offline. Choose it again; Photo Handler will only open a recognized library after its password is valid." }
+                        p { class: "lede", "It may have moved or be offline. Choose it again; Photo Organizer will only open a recognized library after its password is valid." }
                         if !folder().is_empty() { div { class: "folder-summary", span { "Remembered location" } strong { "{folder}" } } }
                         button { class: "primary-button", r#type: "button", onclick: choose_another, "Open existing library" }
                     } else if step() == "home" {
@@ -1455,7 +1455,7 @@ pub fn App() -> Element {
                     } else if step() == "settings" {
                         p { class: "step-label success-label", "LIBRARY SETTINGS" }
                         h2 { "Library settings" }
-                        p { class: "lede", "Choose how broadly Photo Handler finds visually similar imported pictures." }
+                        p { class: "lede", "Choose how broadly Photo Organizer finds visually similar imported pictures." }
                         div { class: "folder-summary",
                             span { "Protected library" }
                             strong { "{folder}" }

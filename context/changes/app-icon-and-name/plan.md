@@ -186,14 +186,14 @@ This change intentionally has no migration. The new identifier creates a separat
 
 #### Automated
 
-- [ ] 1.1 Verify no `bootstrap-scaffold` or `Photo Handler` identity remains in the runtime project metadata or source.
-- [ ] 1.2 Run `cargo check --workspace` without generating a DMG.
-- [ ] 1.3 Run `cargo test --workspace`.
+- [x] 1.1 Verify no `bootstrap-scaffold` or `Photo Handler` identity remains in the runtime project metadata or source.
+- [x] 1.2 Run `cargo check --workspace` without generating a DMG.
+- [x] 1.3 Run `cargo test --workspace`.
 
 #### Manual
 
-- [ ] 1.4 Verify the running UI and native title show Photo Organizer.
-- [ ] 1.5 Verify first-run fresh settings and safe manual reopening of an existing library.
+- [x] 1.4 Verify the running UI and native title show Photo Organizer.
+- [x] 1.5 Verify first-run fresh settings and safe manual reopening of an existing library.
 
 ### Phase 2: Package the selected Photo Organizer icon
 
