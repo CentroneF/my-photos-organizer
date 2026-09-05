@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    bootstrap_scaffold_lib::run()
+    photo_organizer_lib::run()
 }

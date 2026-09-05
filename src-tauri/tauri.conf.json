@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "bootstrap-scaffold",
+  "productName": "Photo Organizer",
   "version": "0.1.0",
-  "identifier": "com.fcentron.bootstrap-scaffold",
+  "identifier": "com.fcentron.photo-organizer",
   "build": {
     "beforeDevCommand": "dx serve --port 1420",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "bootstrap-scaffold",
+        "title": "Photo Organizer",
         "width": 1200,
         "height": 820,
         "minWidth": 960,

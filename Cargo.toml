@@ -1,5 +1,5 @@
 [package]
-name = "bootstrap-scaffold-ui"
+name = "photo-organizer-ui"
 version = "0.1.0"
 edition = "2021"
 

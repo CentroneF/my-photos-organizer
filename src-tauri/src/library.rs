@@ -419,7 +419,7 @@ pub fn setup_library(
     fs::create_dir(&temporary_state_dir).map_err(|error| {
         SetupLibraryError::new(
             "folder_not_writable",
-            format!("Photo Handler could not create its state folder: {error}"),
+            format!("Photo Organizer could not create its state folder: {error}"),
         )
     })?;
 
@@ -459,7 +459,7 @@ pub fn setup_library(
 
     Ok(SetupLibraryResult {
         folder_path: folder.display().to_string(),
-        message: "Protected library created. Only Photo Handler state was added; no media was copied, encrypted, moved, or modified.".to_owned(),
+        message: "Protected library created. Only Photo Organizer state was added; no media was copied, encrypted, moved, or modified.".to_owned(),
     })
 }
 
@@ -500,7 +500,7 @@ pub fn inspect_library_folder(
 
     Err(SetupLibraryError::new(
         "folder_not_empty",
-        "This folder is not empty and is not a recognized Photo Handler library. Nothing was changed.",
+        "This folder is not empty and is not a recognized Photo Organizer library. Nothing was changed.",
     ))
 }
 
@@ -838,19 +838,19 @@ fn validate_existing_library(folder: &Path) -> Result<LibraryMarker, SetupLibrar
     let marker_bytes = fs::read(state_dir.join(MARKER_FILE)).map_err(|_| {
         SetupLibraryError::new(
             "library_unrecognized",
-            "This folder is not a recognized Photo Handler library.",
+            "This folder is not a recognized Photo Organizer library.",
         )
     })?;
     let marker: LibraryMarker = serde_json::from_slice(&marker_bytes).map_err(|_| {
         SetupLibraryError::new(
             "library_unrecognized",
-            "This folder has an invalid Photo Handler marker.",
+            "This folder has an invalid Photo Organizer marker.",
         )
     })?;
     if marker.format_version != MARKER_FORMAT_VERSION {
         return Err(SetupLibraryError::new(
             "library_version_unsupported",
-            "This Photo Handler library uses an unsupported version.",
+            "This Photo Organizer library uses an unsupported version.",
         ));
     }
     if !state_dir.join(DATABASE_FILE).is_file() {
@@ -978,7 +978,7 @@ fn validate_catalogue(
     if version != identity_version || version > CATALOGUE_FORMAT_VERSION {
         return Err(SetupLibraryError::new(
             "library_version_unsupported",
-            "This Photo Handler library uses an unsupported schema version.",
+            "This Photo Organizer library uses an unsupported schema version.",
         ));
     }
     if version < CATALOGUE_FORMAT_VERSION {
