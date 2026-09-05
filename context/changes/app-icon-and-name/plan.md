@@ -186,27 +186,27 @@ This change intentionally has no migration. The new identifier creates a separat
 
 #### Automated
 
-- [x] 1.1 Verify no `bootstrap-scaffold` or `Photo Handler` identity remains in the runtime project metadata or source.
-- [x] 1.2 Run `cargo check --workspace` without generating a DMG.
-- [x] 1.3 Run `cargo test --workspace`.
+- [x] 1.1 Verify no `bootstrap-scaffold` or `Photo Handler` identity remains in the runtime project metadata or source. — bee491a
+- [x] 1.2 Run `cargo check --workspace` without generating a DMG. — bee491a
+- [x] 1.3 Run `cargo test --workspace`. — bee491a
 
 #### Manual
 
-- [x] 1.4 Verify the running UI and native title show Photo Organizer.
-- [x] 1.5 Verify first-run fresh settings and safe manual reopening of an existing library.
+- [x] 1.4 Verify the running UI and native title show Photo Organizer. — bee491a
+- [x] 1.5 Verify first-run fresh settings and safe manual reopening of an existing library. — bee491a
 
 ### Phase 2: Package the selected Photo Organizer icon
 
 #### Automated
 
-- [ ] 2.1 Regenerate the complete Tauri icon family from the committed master artwork.
-- [ ] 2.2 Validate core generated icon file formats.
-- [ ] 2.3 Run `cargo tauri build --bundles app` without creating a DMG.
+- [x] 2.1 Regenerate the complete Tauri icon family from the committed master artwork.
+- [x] 2.2 Validate core generated icon file formats.
+- [x] 2.3 Run `cargo tauri build --bundles app` without creating a DMG.
 
 #### Manual
 
-- [ ] 2.4 Verify the new icon is recognizable and transparent at desktop sizes.
-- [ ] 2.5 Verify macOS and Windows asset sets use the same custom identity.
+- [x] 2.4 Verify the new icon is recognizable and transparent at desktop sizes.
+- [x] 2.5 Verify macOS and Windows asset sets use the same custom identity.
 
 ### Phase 3: Verify the renamed first-run desktop experience
 
