@@ -264,20 +264,20 @@ No schema migration is required. Tag changes reuse `tags`/`candidate_tags`; dele
 
 #### Automated
 
-- [x] 2.1 Run Rust tests for tag updates and trusted path actions
-- [x] 2.2 Run `cargo fmt --check`
+- [x] 2.1 Run Rust tests for tag updates and trusted path actions — 502417f
+- [x] 2.2 Run `cargo fmt --check` — 502417f
 
 #### Manual
 
-- [x] 2.3 Verify metadata panel, immediate tag editing, autocomplete, and duplicate prevention
-- [x] 2.4 Verify copy confirmation and platform-native managed-folder reveal
+- [x] 2.3 Verify metadata panel, immediate tag editing, autocomplete, and duplicate prevention — 502417f
+- [x] 2.4 Verify copy confirmation and platform-native managed-folder reveal — 502417f
 
 ### Phase 3: Safely change managed media
 
 #### Automated
 
 - [ ] 3.1 Run Rust tests for confirmed rotation, Trash deletion, and mutation failures
-- [ ] 3.2 Run `cargo fmt --check`
+- [x] 3.2 Run `cargo fmt --check`
 
 #### Manual
 

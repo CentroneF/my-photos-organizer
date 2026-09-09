@@ -333,6 +333,7 @@ struct MediaDetails {
     tags: Vec<String>,
     preview_url: Option<String>,
     preview_state: String,
+    rotation_supported: bool,
     metadata: ReviewMetadata,
     message: String,
 }
@@ -348,6 +349,39 @@ struct UpdateMediaTagsRequest {
 #[serde(rename_all = "camelCase")]
 struct ManagedMediaActionRequest {
     candidate_id: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RotateManagedMediaRequest {
+    candidate_id: i64,
+    confirmed: bool,
+    direction: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteManagedMediaRequest {
+    candidate_id: i64,
+    confirmed: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteManagedMediaResult {
+    candidate_id: i64,
+}
+
+#[derive(Clone)]
+enum PreviewMutation {
+    Rotate {
+        candidate_id: i64,
+        direction: &'static str,
+    },
+    Delete {
+        candidate_id: i64,
+        filename: String,
+    },
 }
 
 #[derive(Serialize)]
@@ -573,6 +607,8 @@ pub fn App() -> Element {
     let mut preview_tag_options = use_signal(Vec::<String>::new);
     let mut preview_tag_busy = use_signal(|| false);
     let mut preview_copied = use_signal(|| false);
+    let mut preview_mutation_busy = use_signal(|| false);
+    let mut preview_mutation_confirmation = use_signal(|| None::<PreviewMutation>);
     let mut search_refresh = use_signal(|| 0_u64);
     let mut preview_tag_save_request = use_signal(|| None::<(i64, Vec<String>)>);
     let mut preview_copy_request = use_signal(|| None::<i64>);
@@ -1510,6 +1546,125 @@ pub fn App() -> Element {
         });
     });
 
+    let mut confirm_preview_mutation = move || {
+        let Some(mutation) = preview_mutation_confirmation() else {
+            return;
+        };
+        preview_mutation_confirmation.set(None);
+        preview_mutation_busy.set(true);
+        preview_error.set(String::new());
+        spawn(async move {
+            match mutation {
+                PreviewMutation::Rotate {
+                    candidate_id,
+                    direction,
+                } => {
+                    let request = PreviewInvokeArgs {
+                        request: RotateManagedMediaRequest {
+                            candidate_id,
+                            confirmed: true,
+                            direction: direction.into(),
+                        },
+                    };
+                    match serde_wasm_bindgen::to_value(&request) {
+                        Ok(args) => match invoke("rotate_managed_media", args).await {
+                            Ok(value) => {
+                                match serde_wasm_bindgen::from_value::<MediaDetails>(value) {
+                                    Ok(detail) => {
+                                        preview_detail.set(Some(detail));
+                                        preview_zoom.set(1.0);
+                                        preview_fit.set(true);
+                                    }
+                                    Err(_) => preview_error.set(
+                                        "The rotated media returned an unexpected response.".into(),
+                                    ),
+                                }
+                            }
+                            Err(value) => preview_error
+                                .set(command_error(value, "Could not rotate the managed copy.")),
+                        },
+                        Err(_) => {
+                            preview_error.set("Could not prepare the managed-copy rotation.".into())
+                        }
+                    }
+                }
+                PreviewMutation::Delete { candidate_id, .. } => {
+                    let request = PreviewInvokeArgs {
+                        request: DeleteManagedMediaRequest {
+                            candidate_id,
+                            confirmed: true,
+                        },
+                    };
+                    match serde_wasm_bindgen::to_value(&request) {
+                        Ok(args) => match invoke("delete_managed_media", args).await {
+                            Ok(value) => match serde_wasm_bindgen::from_value::<
+                                DeleteManagedMediaResult,
+                            >(value)
+                            {
+                                Ok(result) if result.candidate_id == candidate_id => {
+                                    let next = search_items.with_mut(|items| {
+                                        let Some(deleted_index) = items
+                                            .iter()
+                                            .position(|item| item.candidate_id == candidate_id)
+                                        else {
+                                            return None;
+                                        };
+                                        items.remove(deleted_index);
+                                        (!items.is_empty()).then(|| {
+                                            (
+                                                deleted_index.min(items.len() - 1),
+                                                items[deleted_index.min(items.len() - 1)].clone(),
+                                            )
+                                        })
+                                    });
+                                    search_refresh.with_mut(|revision| *revision += 1);
+                                    if let Some((index, item)) = next {
+                                        preview_index.set(Some(index));
+                                        preview_detail.set(None);
+                                        preview_loading.set(true);
+                                        let details_request = MediaDetailsInvokeArgs {
+                                            request: MediaDetailsRequest {
+                                                candidate_id: item.candidate_id,
+                                            },
+                                        };
+                                        match serde_wasm_bindgen::to_value(&details_request) {
+                                            Ok(args) => match invoke("media_details", args).await {
+                                                Ok(value) => match serde_wasm_bindgen::from_value::<MediaDetails>(value) {
+                                                    Ok(detail) => preview_detail.set(Some(detail)),
+                                                    Err(_) => preview_error.set("The next media details returned an unexpected response.".into()),
+                                                },
+                                                Err(value) => preview_error.set(command_error(value, "Could not load the next managed media item.")),
+                                            },
+                                            Err(_) => preview_error.set("Could not prepare the next media preview.".into()),
+                                        }
+                                        preview_loading.set(false);
+                                    } else {
+                                        preview_index.set(None);
+                                        preview_detail.set(None);
+                                    }
+                                }
+                                Ok(_) => preview_error.set(
+                                    "The deletion response did not match the selected media."
+                                        .into(),
+                                ),
+                                Err(_) => preview_error
+                                    .set("The deletion returned an unexpected response.".into()),
+                            },
+                            Err(value) => preview_error.set(command_error(
+                                value,
+                                "Could not move the managed copy to Trash.",
+                            )),
+                        },
+                        Err(_) => {
+                            preview_error.set("Could not prepare the managed-copy deletion.".into())
+                        }
+                    }
+                }
+            }
+            preview_mutation_busy.set(false);
+        });
+    };
+
     let is_onboarding = matches!(step().as_str(), "loading" | "folder" | "stale");
     let shell_class = if is_onboarding {
         "app-shell"
@@ -1981,8 +2136,16 @@ pub fn App() -> Element {
                                                 div { class: "media-preview-zoom",
                                                     button { class: "secondary-button", r#type: "button", onclick: move |_| { preview_fit.set(false); preview_zoom.set((preview_zoom() - 0.25).max(0.25)); }, "aria-label": "Zoom out", "🔍−" }
                                                     button { class: "secondary-button", r#type: "button", onclick: move |_| { preview_fit.set(true); preview_zoom.set(1.0); }, "Fit" }
+                                                    button { class: "secondary-button", r#type: "button", onclick: move |_| { preview_fit.set(false); preview_zoom.set(1.0); }, "100%" }
                                                     button { class: "secondary-button", r#type: "button", onclick: move |_| { preview_fit.set(false); preview_zoom.set((preview_zoom() + 0.25).min(4.0)); }, "aria-label": "Zoom in", "🔍+" }
                                                 }
+                                            }
+                                            if let Some(detail) = preview_detail().filter(|detail| detail.rotation_supported) {
+                                                button { class: "secondary-button", r#type: "button", disabled: preview_mutation_busy(), onclick: move |_| preview_mutation_confirmation.set(Some(PreviewMutation::Rotate { candidate_id: detail.candidate_id, direction: "left" })), "aria-label": "Rotate managed image left", "↺" }
+                                                button { class: "secondary-button", r#type: "button", disabled: preview_mutation_busy(), onclick: move |_| preview_mutation_confirmation.set(Some(PreviewMutation::Rotate { candidate_id: detail.candidate_id, direction: "right" })), "aria-label": "Rotate managed image right", "↻" }
+                                            }
+                                            if let Some(detail) = preview_detail() {
+                                                button { class: "secondary-button preview-delete-button", r#type: "button", disabled: preview_mutation_busy(), onclick: move |_| preview_mutation_confirmation.set(Some(PreviewMutation::Delete { candidate_id: detail.candidate_id, filename: detail.filename.clone() })), "Delete" }
                                             }
                                             button { class: "secondary-button media-preview-close", r#type: "button", onclick: move |_| close_preview(), "Close" }
                                             button { class: "secondary-button", r#type: "button", "aria-expanded": "{!preview_info_collapsed()}", "aria-label": if preview_info_collapsed() { "Show media information" } else { "Hide media information" }, title: if preview_info_collapsed() { "Show media information" } else { "Hide media information" }, onclick: move |_| preview_info_collapsed.set(!preview_info_collapsed()), if preview_info_collapsed() { "<" } else { ">" } }
@@ -2046,6 +2209,18 @@ pub fn App() -> Element {
                                             }
                                         } else { p { class: "privacy-note", "Media information will appear here when available." } }
                                     }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(mutation) = preview_mutation_confirmation() {
+                        div { class: "comparison-overlay preview-confirmation-overlay",
+                            div { class: "comparison-dialog preview-confirmation-dialog", role: "alertdialog", "aria-modal": "true", "aria-label": "Confirm managed media change",
+                                h2 { match &mutation { PreviewMutation::Rotate { .. } => "Overwrite managed copy?", PreviewMutation::Delete { .. } => "Move managed copy to Trash?" } }
+                                p { match &mutation { PreviewMutation::Rotate { .. } => "This rotates and overwrites only the managed library copy. Your original import-source file is not changed.".to_owned(), PreviewMutation::Delete { filename, .. } => format!("{filename} will be moved to your operating system Trash. Only the managed library copy is affected; the original import source remains intact.") } }
+                                div { class: "comparison-actions",
+                                    button { class: "secondary-button", r#type: "button", disabled: preview_mutation_busy(), onclick: move |_| preview_mutation_confirmation.set(None), "Cancel" }
+                                    button { class: "primary-button preview-destructive-confirm", r#type: "button", disabled: preview_mutation_busy(), onclick: move |_| confirm_preview_mutation(), if preview_mutation_busy() { "Working…" } else { "Confirm" } }
                                 }
                             }
                         }

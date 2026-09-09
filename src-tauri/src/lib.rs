@@ -109,6 +109,21 @@ fn reveal_managed_media_folder(
 }
 
 #[tauri::command]
+fn rotate_managed_media(
+    app: tauri::AppHandle,
+    request: search::RotateManagedMediaRequest,
+) -> Result<search::MediaDetails, search::SearchError> {
+    search::rotate_managed_media(app, request)
+}
+
+#[tauri::command]
+fn delete_managed_media(
+    request: search::DeleteManagedMediaRequest,
+) -> Result<search::DeleteManagedMediaResult, search::SearchError> {
+    search::delete_managed_media(request)
+}
+
+#[tauri::command]
 fn list_library_tags(
     request: search::ListLibraryTagsRequest,
 ) -> Result<search::ListLibraryTagsResult, search::SearchError> {
@@ -323,6 +338,8 @@ pub fn run() {
             update_media_tags,
             copy_managed_media_path,
             reveal_managed_media_folder,
+            rotate_managed_media,
+            delete_managed_media,
             list_library_tags,
             recent_library_tags,
             lock_library,

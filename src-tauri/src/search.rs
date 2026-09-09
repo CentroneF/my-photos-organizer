@@ -1,4 +1,9 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    io::{BufWriter, Write},
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use chrono::NaiveDate;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -91,6 +96,34 @@ pub struct ManagedMediaActionRequest {
     pub candidate_id: i64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RotateManagedMediaRequest {
+    pub candidate_id: i64,
+    pub confirmed: bool,
+    pub direction: RotationDirection,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum RotationDirection {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteManagedMediaRequest {
+    pub candidate_id: i64,
+    pub confirmed: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteManagedMediaResult {
+    pub candidate_id: i64,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateMediaTagsResult {
@@ -108,6 +141,7 @@ pub struct MediaDetails {
     pub tags: Vec<String>,
     pub preview_url: Option<String>,
     pub preview_state: &'static str,
+    pub rotation_supported: bool,
     pub metadata: ReviewMetadata,
     pub message: String,
 }
@@ -257,6 +291,7 @@ pub fn media_details(
         tags: item.tags,
         preview_url,
         preview_state,
+        rotation_supported: supports_rotation(&item.destination),
         metadata: crate::review::review_metadata(&item.destination),
         message: if available {
             "Managed media is ready for preview.".into()
@@ -264,6 +299,19 @@ pub fn media_details(
             "This managed media file is unavailable or cannot be previewed safely.".into()
         },
     })
+}
+
+fn supports_rotation(destination: &Path) -> bool {
+    image::ImageReader::open(destination)
+        .ok()
+        .and_then(|reader| reader.with_guessed_format().ok())
+        .and_then(|reader| reader.format())
+        .is_some_and(|format| {
+            matches!(
+                format,
+                image::ImageFormat::Jpeg | image::ImageFormat::Png | image::ImageFormat::WebP
+            )
+        })
 }
 
 /// Replaces an imported item's tag set after proving that its managed copy is still safe.
@@ -310,6 +358,204 @@ pub fn managed_media_path(
         resolve_active_imported_item(connection, root, request.candidate_id)
             .map(|item| item.destination)
     })
+}
+
+/// Rotates a validated managed image only after an explicit confirmation.
+pub fn rotate_managed_media(
+    app: tauri::AppHandle,
+    request: RotateManagedMediaRequest,
+) -> Result<MediaDetails, SearchError> {
+    if !request.confirmed {
+        return Err(error(
+            "confirmation_required",
+            "Confirm overwriting the managed copy before rotating it.",
+        ));
+    }
+    let item = library::with_catalogue(|connection, root| {
+        resolve_active_imported_item(connection, root, request.candidate_id)
+    })?;
+    if item.media_type != "image" {
+        return Err(error(
+            "rotation_unsupported",
+            "Only supported managed image files can be rotated.",
+        ));
+    }
+    rotate_image_file(&item.destination, request.direction)?;
+    media_details(
+        app,
+        MediaDetailsRequest {
+            candidate_id: item.candidate_id,
+        },
+    )
+}
+
+/// Moves a validated managed copy to Trash before hiding it from active search results.
+pub fn delete_managed_media(
+    request: DeleteManagedMediaRequest,
+) -> Result<DeleteManagedMediaResult, SearchError> {
+    if !request.confirmed {
+        return Err(error(
+            "confirmation_required",
+            "Confirm moving the managed copy to Trash before deleting it.",
+        ));
+    }
+    delete_managed_media_with_trash(request, |path| {
+        trash::delete(path).map_err(|value| value.to_string())
+    })
+}
+
+fn delete_managed_media_with_trash(
+    request: DeleteManagedMediaRequest,
+    move_to_trash: impl Fn(&Path) -> Result<(), String>,
+) -> Result<DeleteManagedMediaResult, SearchError> {
+    if !request.confirmed {
+        return Err(error(
+            "confirmation_required",
+            "Confirm moving the managed copy to Trash before deleting it.",
+        ));
+    }
+    library::with_catalogue(|connection, root| {
+        let item = resolve_active_imported_item(connection, root, request.candidate_id)?;
+        move_to_trash(&item.destination).map_err(|_| {
+            error(
+                "trash_failed",
+                "Could not move the managed copy to Trash. It remains in the library.",
+            )
+        })?;
+        connection.execute(
+            "UPDATE item_decisions SET destination_path = NULL WHERE candidate_id = ?1 AND decision = 'imported' AND destination_path IS NOT NULL AND replaced_by_candidate_id IS NULL",
+            [item.candidate_id],
+        ).map_err(database_error)?;
+        Ok(DeleteManagedMediaResult {
+            candidate_id: item.candidate_id,
+        })
+    })
+}
+
+fn rotate_image_file(destination: &Path, direction: RotationDirection) -> Result<(), SearchError> {
+    let reader = image::ImageReader::open(destination)
+        .map_err(|_| {
+            error(
+                "rotation_unsupported",
+                "This managed image cannot be decoded for rotation.",
+            )
+        })?
+        .with_guessed_format()
+        .map_err(|_| {
+            error(
+                "rotation_unsupported",
+                "This managed image format is unsupported for rotation.",
+            )
+        })?;
+    let format = reader.format().ok_or_else(|| {
+        error(
+            "rotation_unsupported",
+            "This managed image format is unsupported for rotation.",
+        )
+    })?;
+    if !matches!(
+        format,
+        image::ImageFormat::Jpeg | image::ImageFormat::Png | image::ImageFormat::WebP
+    ) {
+        return Err(error(
+            "rotation_unsupported",
+            "This managed image format is unsupported for rotation.",
+        ));
+    }
+    let image = reader.decode().map_err(|_| {
+        error(
+            "rotation_unsupported",
+            "This managed image cannot be decoded for rotation.",
+        )
+    })?;
+    let rotated = match direction {
+        RotationDirection::Left => image.rotate270(),
+        RotationDirection::Right => image.rotate90(),
+    };
+    let temporary = rotation_temporary_path(destination);
+    let output = fs::File::create(&temporary).map_err(|_| {
+        error(
+            "rotation_failed",
+            "Could not prepare a safe replacement for the managed copy.",
+        )
+    })?;
+    let mut writer = BufWriter::new(output);
+    if rotated.write_to(&mut writer, format).is_err() || writer.flush().is_err() {
+        let _ = fs::remove_file(&temporary);
+        return Err(error(
+            "rotation_failed",
+            "Could not write the rotated managed copy; the original was preserved.",
+        ));
+    }
+    let output = writer.into_inner().map_err(|_| {
+        let _ = fs::remove_file(&temporary);
+        error(
+            "rotation_failed",
+            "Could not finish the rotated managed copy; the original was preserved.",
+        )
+    })?;
+    if output.sync_all().is_err() {
+        let _ = fs::remove_file(&temporary);
+        return Err(error(
+            "rotation_failed",
+            "Could not safely finish the rotated managed copy; the original was preserved.",
+        ));
+    }
+    replace_with_rotated_file(&temporary, destination)
+}
+
+fn rotation_temporary_path(destination: &Path) -> PathBuf {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let extension = destination
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("tmp");
+    destination.with_file_name(format!(
+        ".photo-handler-rotate-{}-{}.{}",
+        std::process::id(),
+        stamp,
+        extension
+    ))
+}
+
+fn replace_with_rotated_file(temporary: &Path, destination: &Path) -> Result<(), SearchError> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        fs::rename(temporary, destination).map_err(|_| {
+            let _ = fs::remove_file(temporary);
+            error(
+                "rotation_failed",
+                "Could not replace the managed copy; the original was preserved.",
+            )
+        })
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let backup = destination.with_extension("photo-handler-rotate-backup");
+        fs::rename(destination, &backup).map_err(|_| {
+            error(
+                "rotation_failed",
+                "Could not prepare the managed copy for replacement.",
+            )
+        })?;
+        if fs::rename(temporary, destination).is_err() {
+            let _ = fs::rename(&backup, destination);
+            let _ = fs::remove_file(temporary);
+            return Err(error(
+                "rotation_failed",
+                "Could not replace the managed copy; the original was preserved.",
+            ));
+        }
+        fs::remove_file(backup).map_err(|_| {
+            error(
+                "rotation_failed",
+                "The rotated managed copy was saved but its backup needs attention.",
+            )
+        })
+    }
 }
 
 pub fn search_library(
@@ -906,6 +1152,80 @@ mod tests {
             .unwrap_err()
             .code,
             "media_unavailable"
+        );
+        library::lock_library();
+    }
+
+    #[test]
+    fn confirmed_rotation_and_deletion_preserve_managed_media_until_safe() {
+        let _session_guard = library::test_session_guard();
+        let directory = tempdir().unwrap();
+        library::setup_library(library::SetupLibraryRequest {
+            folder_path: directory.path().display().to_string(),
+            password: "correct horse battery staple".into(),
+            password_confirmation: "correct horse battery staple".into(),
+            recovery_question: "pet".into(),
+            recovery_answer: "Mochi".into(),
+        })
+        .unwrap();
+        let managed = directory.path().join("managed.png");
+        let source = tempdir().unwrap();
+        let original = source.path().join("original.png");
+        let image = image::RgbaImage::from_fn(2, 3, |x, y| image::Rgba([x as u8, y as u8, 0, 255]));
+        image.save(&managed).unwrap();
+        image.save(&original).unwrap();
+        library::with_catalogue(|connection, _| {
+            connection.execute_batch("INSERT INTO review_sessions (id, source_path, state) VALUES (1, 'source', 'complete'); INSERT INTO review_candidates (id, session_id, relative_path, file_size, modified_at, media_type, decision) VALUES (1, 1, 'managed.png', 1, 0, 'image', 'imported');").map_err(database_error)?;
+            connection.execute("INSERT INTO item_decisions (candidate_id, decision, destination_path, effective_import_date) VALUES (1, 'imported', ?1, '2026-09-09')", [managed.display().to_string()]).map_err(database_error)?;
+            Ok::<(), SearchError>(())
+        }).unwrap();
+
+        assert_eq!(
+            delete_managed_media(DeleteManagedMediaRequest {
+                candidate_id: 1,
+                confirmed: false
+            })
+            .unwrap_err()
+            .code,
+            "confirmation_required"
+        );
+        assert!(managed.exists());
+        rotate_image_file(&managed, RotationDirection::Right).unwrap();
+        assert_eq!(image::image_dimensions(&managed).unwrap(), (3, 2));
+        assert_eq!(image::image_dimensions(&original).unwrap(), (2, 3));
+        assert_eq!(
+            delete_managed_media_with_trash(
+                DeleteManagedMediaRequest {
+                    candidate_id: 1,
+                    confirmed: true
+                },
+                |_| Err("no Trash".into())
+            )
+            .unwrap_err()
+            .code,
+            "trash_failed"
+        );
+        assert!(managed.exists());
+        assert!(
+            library::with_catalogue(|connection, root| resolve_active_imported_item(
+                connection, root, 1
+            ))
+            .is_ok()
+        );
+        delete_managed_media_with_trash(
+            DeleteManagedMediaRequest {
+                candidate_id: 1,
+                confirmed: true,
+            },
+            |path| fs::remove_file(path).map_err(|error| error.to_string()),
+        )
+        .unwrap();
+        assert!(!managed.exists());
+        assert!(
+            library::with_catalogue(|connection, root| resolve_active_imported_item(
+                connection, root, 1
+            ))
+            .is_err()
         );
         library::lock_library();
     }
