@@ -252,25 +252,25 @@ No schema migration is required. Tag changes reuse `tags`/`candidate_tags`; dele
 
 #### Automated
 
-- [x] 1.1 Run Rust tests for candidate resolution and unavailable preview states
-- [x] 1.2 Run `cargo fmt --check`
+- [x] 1.1 Run Rust tests for candidate resolution and unavailable preview states — 0e48179
+- [x] 1.2 Run `cargo fmt --check` — 0e48179
 
 #### Manual
 
-- [x] 1.3 Verify compact cards, full-window preview, keyboard navigation, and position indicators
-- [x] 1.4 Verify image viewing controls, video playback controls, and recoverable preview failures
+- [x] 1.3 Verify compact cards, full-window preview, keyboard navigation, and position indicators — 0e48179
+- [x] 1.4 Verify image viewing controls, video playback controls, and recoverable preview failures — 0e48179
 
 ### Phase 2: Manage preview metadata and tags
 
 #### Automated
 
-- [ ] 2.1 Run Rust tests for tag updates and trusted path actions
-- [ ] 2.2 Run `cargo fmt --check`
+- [x] 2.1 Run Rust tests for tag updates and trusted path actions
+- [x] 2.2 Run `cargo fmt --check`
 
 #### Manual
 
-- [ ] 2.3 Verify metadata panel, immediate tag editing, autocomplete, and duplicate prevention
-- [ ] 2.4 Verify copy confirmation and platform-native managed-folder reveal
+- [x] 2.3 Verify metadata panel, immediate tag editing, autocomplete, and duplicate prevention
+- [x] 2.4 Verify copy confirmation and platform-native managed-folder reveal
 
 ### Phase 3: Safely change managed media
 

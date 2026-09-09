@@ -336,6 +336,31 @@ struct MediaDetails {
     metadata: ReviewMetadata,
     message: String,
 }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateMediaTagsRequest {
+    candidate_id: i64,
+    tags: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedMediaActionRequest {
+    candidate_id: i64,
+}
+
+#[derive(Serialize)]
+struct PreviewInvokeArgs<T> {
+    request: T,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateMediaTagsResult {
+    candidate_id: i64,
+    tags: Vec<String>,
+}
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SearchLibraryRequest<'a> {
@@ -405,6 +430,14 @@ fn metadata_gps(value: Option<GpsCoordinates>) -> String {
             )
         })
         .unwrap_or_else(|| "Not available".into())
+}
+
+fn normalize_tag(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 fn video_target(event: &MediaEvent) -> Option<web_sys::HtmlVideoElement> {
@@ -535,6 +568,15 @@ pub fn App() -> Element {
     let mut preview_error = use_signal(String::new);
     let mut preview_zoom = use_signal(|| 1_f32);
     let mut preview_fit = use_signal(|| true);
+    let mut preview_info_collapsed = use_signal(|| false);
+    let mut preview_tag_draft = use_signal(String::new);
+    let mut preview_tag_options = use_signal(Vec::<String>::new);
+    let mut preview_tag_busy = use_signal(|| false);
+    let mut preview_copied = use_signal(|| false);
+    let mut search_refresh = use_signal(|| 0_u64);
+    let mut preview_tag_save_request = use_signal(|| None::<(i64, Vec<String>)>);
+    let mut preview_copy_request = use_signal(|| None::<i64>);
+    let mut preview_reveal_request = use_signal(|| None::<i64>);
 
     use_effect(move || {
         spawn(async move {
@@ -619,6 +661,7 @@ pub fn App() -> Element {
         let captured_end = search_captured_end_date();
         let media_types = search_media_types();
         let tags = search_selected_tags();
+        let _refresh = search_refresh();
         spawn(async move {
             search_loading.set(true);
             let request = SearchLibraryInvokeArgs {
@@ -637,7 +680,24 @@ pub fn App() -> Element {
                 Ok(args) => match invoke("search_library", args).await {
                     Ok(value) => {
                         match serde_wasm_bindgen::from_value::<SearchLibraryResult>(value) {
-                            Ok(result) => search_items.set(result.items),
+                            Ok(result) => {
+                                let selected_id = preview_index().and_then(|index| {
+                                    search_items().get(index).map(|item| item.candidate_id)
+                                });
+                                let selected_remains = selected_id.is_none_or(|candidate_id| {
+                                    result
+                                        .items
+                                        .iter()
+                                        .any(|item| item.candidate_id == candidate_id)
+                                });
+                                search_items.set(result.items);
+                                if !selected_remains {
+                                    preview_index.set(None);
+                                    preview_detail.set(None);
+                                    preview_error.set(String::new());
+                                    preview_loading.set(false);
+                                }
+                            }
                             Err(_) => error
                                 .set("The library search returned an unexpected response.".into()),
                         }
@@ -677,6 +737,38 @@ pub fn App() -> Element {
                     Err(value) => error.set(command_error(value, "Could not load library tags.")),
                 },
                 Err(_) => error.set("Could not prepare the tag list.".into()),
+            }
+        });
+    });
+
+    use_effect(move || {
+        if preview_index().is_none() {
+            preview_tag_options.set(Vec::new());
+            return;
+        }
+        let query = preview_tag_draft();
+        spawn(async move {
+            let request = ListLibraryTagsInvokeArgs {
+                request: ListLibraryTagsRequest {
+                    query: (!query.trim().is_empty()).then_some(query.as_str()),
+                },
+            };
+            match serde_wasm_bindgen::to_value(&request) {
+                Ok(args) => match invoke("list_library_tags", args).await {
+                    Ok(value) => {
+                        match serde_wasm_bindgen::from_value::<ListLibraryTagsResult>(value) {
+                            Ok(result) => preview_tag_options.set(result.tags),
+                            Err(_) => preview_error.set(
+                                "The preview tag list returned an unexpected response.".into(),
+                            ),
+                        }
+                    }
+                    Err(value) => preview_error.set(command_error(
+                        value,
+                        "Could not load preview tag suggestions.",
+                    )),
+                },
+                Err(_) => preview_error.set("Could not prepare preview tag suggestions.".into()),
             }
         });
     });
@@ -1272,6 +1364,9 @@ pub fn App() -> Element {
         preview_loading.set(true);
         preview_zoom.set(1.0);
         preview_fit.set(true);
+        preview_info_collapsed.set(false);
+        preview_tag_draft.set(String::new());
+        preview_copied.set(false);
         spawn(async move {
             let request = MediaDetailsInvokeArgs {
                 request: MediaDetailsRequest {
@@ -1300,6 +1395,8 @@ pub fn App() -> Element {
         preview_detail.set(None);
         preview_error.set(String::new());
         preview_loading.set(false);
+        preview_tag_draft.set(String::new());
+        preview_copied.set(false);
     };
     let mut previous_preview = move || {
         if let Some(index) = preview_index() {
@@ -1315,6 +1412,103 @@ pub fn App() -> Element {
             }
         }
     };
+
+    use_effect(move || {
+        let Some((candidate_id, tags)) = preview_tag_save_request() else {
+            return;
+        };
+        preview_tag_save_request.set(None);
+        preview_error.set(String::new());
+        preview_tag_busy.set(true);
+        spawn(async move {
+            let request = PreviewInvokeArgs {
+                request: UpdateMediaTagsRequest { candidate_id, tags },
+            };
+            match serde_wasm_bindgen::to_value(&request) {
+                Ok(args) => match invoke("update_media_tags", args).await {
+                    Ok(value) => {
+                        match serde_wasm_bindgen::from_value::<UpdateMediaTagsResult>(value) {
+                            Ok(result) => {
+                                preview_detail.with_mut(|detail| {
+                                    if let Some(detail) = detail
+                                        .as_mut()
+                                        .filter(|detail| detail.candidate_id == result.candidate_id)
+                                    {
+                                        detail.tags = result.tags.clone();
+                                    }
+                                });
+                                search_items.with_mut(|items| {
+                                    if let Some(item) = items
+                                        .iter_mut()
+                                        .find(|item| item.candidate_id == result.candidate_id)
+                                    {
+                                        item.tags = result.tags.clone();
+                                    }
+                                });
+                                preview_tag_draft.set(String::new());
+                                search_refresh.with_mut(|revision| *revision += 1);
+                            }
+                            Err(_) => preview_error
+                                .set("The saved tags returned an unexpected response.".into()),
+                        }
+                    }
+                    Err(value) => preview_error.set(command_error(
+                        value,
+                        "Could not save the managed media tags.",
+                    )),
+                },
+                Err(_) => preview_error.set("Could not prepare the tag update.".into()),
+            }
+            preview_tag_busy.set(false);
+        });
+    });
+
+    use_effect(move || {
+        let Some(candidate_id) = preview_copy_request() else {
+            return;
+        };
+        preview_copy_request.set(None);
+        preview_error.set(String::new());
+        preview_copied.set(false);
+        spawn(async move {
+            let request = PreviewInvokeArgs {
+                request: ManagedMediaActionRequest { candidate_id },
+            };
+            match serde_wasm_bindgen::to_value(&request) {
+                Ok(args) => match invoke("copy_managed_media_path", args).await {
+                    Ok(_) => preview_copied.set(true),
+                    Err(value) => preview_error.set(command_error(
+                        value,
+                        "Could not copy the managed media path.",
+                    )),
+                },
+                Err(_) => preview_error.set("Could not prepare the managed path copy.".into()),
+            }
+        });
+    });
+
+    use_effect(move || {
+        let Some(candidate_id) = preview_reveal_request() else {
+            return;
+        };
+        preview_reveal_request.set(None);
+        preview_error.set(String::new());
+        spawn(async move {
+            let request = PreviewInvokeArgs {
+                request: ManagedMediaActionRequest { candidate_id },
+            };
+            match serde_wasm_bindgen::to_value(&request) {
+                Ok(args) => match invoke("reveal_managed_media_folder", args).await {
+                    Ok(_) => (),
+                    Err(value) => preview_error.set(command_error(
+                        value,
+                        "Could not open the managed media folder.",
+                    )),
+                },
+                Err(_) => preview_error.set("Could not prepare the managed-folder reveal.".into()),
+            }
+        });
+    });
 
     let is_onboarding = matches!(step().as_str(), "loading" | "folder" | "stale");
     let shell_class = if is_onboarding {
@@ -1769,12 +1963,15 @@ pub fn App() -> Element {
                                 "aria-modal": "true",
                                 "aria-label": "Preview of {selected.filename}",
                                 tabindex: "0",
+                                onmounted: move |event| async move {
+                                    let _ = event.data().set_focus(true).await;
+                                },
                                 onkeydown: move |event| {
                                     if event.key() == Key::Escape { close_preview(); }
                                     else if event.key() == Key::ArrowLeft { previous_preview(); }
                                     else if event.key() == Key::ArrowRight { next_preview(); }
                                 },
-                                div { class: "media-preview-content",
+                                div { class: if preview_info_collapsed() { "media-preview-content media-preview-content-info-hidden" } else { "media-preview-content" },
                                     section { class: "media-preview-stage",
                                         header { class: "media-preview-toolbar",
                                             button { class: "secondary-button", r#type: "button", onclick: move |_| previous_preview(), disabled: preview_index() == Some(0), "aria-label": "Previous media", "←" }
@@ -1788,6 +1985,7 @@ pub fn App() -> Element {
                                                 }
                                             }
                                             button { class: "secondary-button media-preview-close", r#type: "button", onclick: move |_| close_preview(), "Close" }
+                                            button { class: "secondary-button", r#type: "button", "aria-expanded": "{!preview_info_collapsed()}", "aria-label": if preview_info_collapsed() { "Show media information" } else { "Hide media information" }, title: if preview_info_collapsed() { "Show media information" } else { "Hide media information" }, onclick: move |_| preview_info_collapsed.set(!preview_info_collapsed()), if preview_info_collapsed() { "<" } else { ">" } }
                                         }
                                         div { class: "media-preview-canvas",
                                         if preview_loading() { p { class: "preview-fallback", "Loading managed media…" } }
@@ -1802,24 +2000,50 @@ pub fn App() -> Element {
                                         }
                                         }
                                     }
-                                    aside { class: "media-preview-info", "aria-label": "Media information",
+                                    aside { class: if preview_info_collapsed() { "media-preview-info media-preview-info-collapsed" } else { "media-preview-info" }, "aria-label": "Media information",
                                         if let Some(detail) = preview_detail() {
-                                            h2 { "{detail.filename}" }
-                                            p { class: "privacy-note", "{detail.media_type}" }
-                                            div { class: "review-metadata",
-                                                strong { "Media details" }
-                                                dl {
-                                                    div { dt { "Size" } dd { "{metadata_size(detail.metadata.file_size_bytes)}" } }
-                                                    div { dt { "Dimensions" } dd { "{metadata_dimensions(detail.metadata.width, detail.metadata.height)}" } }
-                                                    div { dt { "Created" } dd { "{metadata_value(detail.metadata.created_at.clone())}" } }
-                                                    div { dt { "Modified" } dd { "{metadata_value(detail.metadata.modified_at.clone())}" } }
-                                                    div { dt { "Captured" } dd { "{metadata_value(detail.metadata.captured_at.clone())}" } }
-                                                    div { dt { "Camera" } dd { "{metadata_value(detail.metadata.camera.clone())}" } }
-                                                    div { dt { "Orientation" } dd { "{metadata_value(detail.metadata.orientation.clone())}" } }
-                                                    div { dt { "GPS location" } dd { "{metadata_gps(detail.metadata.gps.clone())}" } }
+                                            div { class: "media-preview-info-header",
+                                                div { h2 { "{detail.filename}" } p { class: "privacy-note", "{detail.media_type}" } }
+                                            }
+                                            if !preview_info_collapsed() {
+                                                div { class: "review-metadata",
+                                                    strong { "Media details" }
+                                                    dl {
+                                                        div { dt { "Size" } dd { "{metadata_size(detail.metadata.file_size_bytes)}" } }
+                                                        div { dt { "Dimensions" } dd { "{metadata_dimensions(detail.metadata.width, detail.metadata.height)}" } }
+                                                        div { dt { "Created" } dd { "{metadata_value(detail.metadata.created_at.clone())}" } }
+                                                        div { dt { "Modified" } dd { "{metadata_value(detail.metadata.modified_at.clone())}" } }
+                                                        div { dt { "Captured" } dd { "{metadata_value(detail.metadata.captured_at.clone())}" } }
+                                                        div { dt { "Camera" } dd { "{metadata_value(detail.metadata.camera.clone())}" } }
+                                                        div { dt { "Orientation" } dd { "{metadata_value(detail.metadata.orientation.clone())}" } }
+                                                        div { dt { "GPS location" } dd { "{metadata_gps(detail.metadata.gps.clone())}" } }
+                                                    }
+                                                }
+                                                div { class: "preview-tag-workspace",
+                                                    strong { "Tags" }
+                                                    div { class: "review-tag-editor",
+                                                        for tag in detail.tags.clone() {
+                                                            span { class: "review-tag-chip", "{tag}"
+                                                                button { r#type: "button", "aria-label": "Remove tag {tag}", disabled: preview_tag_busy(), onclick: move |_| { let mut tags = preview_detail().map(|detail| detail.tags).unwrap_or_default(); tags.retain(|selected| selected != &tag); preview_tag_save_request.set(Some((detail.candidate_id, tags))); }, "×" }
+                                                            }
+                                                        }
+                                                        input { value: "{preview_tag_draft}", placeholder: "Type a tag and press Space", disabled: preview_tag_busy(), oninput: move |event| { let value = event.value(); let commits = value.split_whitespace().collect::<Vec<_>>(); let ends_with_space = value.chars().last().is_some_and(char::is_whitespace); let draft = if ends_with_space { String::new() } else { commits.last().copied().unwrap_or_default().to_owned() }; let commit_count = commits.len().saturating_sub((!ends_with_space) as usize); if commit_count > 0 { let mut tags = preview_detail().map(|detail| detail.tags).unwrap_or_default(); for tag in commits.into_iter().take(commit_count) { let tag = normalize_tag(tag); if !tag.is_empty() && !tags.contains(&tag) { tags.push(tag); } } preview_tag_save_request.set(Some((detail.candidate_id, tags))); } preview_tag_draft.set(draft); }, onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); let tag = normalize_tag(&preview_tag_draft()); let mut tags = preview_detail().map(|detail| detail.tags).unwrap_or_default(); if !tag.is_empty() && !tags.contains(&tag) { tags.push(tag); preview_tag_save_request.set(Some((detail.candidate_id, tags))); } } } }
+                                                    }
+                                                    if !preview_tag_options().is_empty() {
+                                                        div { class: "preview-tag-suggestions", role: "listbox", "aria-label": "Suggested tags",
+                                                            for tag in preview_tag_options() {
+                                                                if !detail.tags.contains(&tag) {
+                                                                    button { class: "tag-suggestion", r#type: "button", disabled: preview_tag_busy(), onclick: move |_| { let mut tags = preview_detail().map(|detail| detail.tags).unwrap_or_default(); if !tags.contains(&tag) { tags.push(tag.clone()); preview_tag_save_request.set(Some((detail.candidate_id, tags))); } }, "{tag}" }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                div { class: "preview-path-actions",
+                                                    button { class: "secondary-button", r#type: "button", onclick: move |_| preview_copy_request.set(Some(detail.candidate_id)), if preview_copied() { "Copied" } else { "Copy path" } }
+                                                    button { class: "secondary-button", r#type: "button", onclick: move |_| preview_reveal_request.set(Some(detail.candidate_id)), if cfg!(target_os = "macos") { "Open in Finder" } else { "Open in Explorer" } }
                                                 }
                                             }
-                                            if !detail.tags.is_empty() { p { class: "privacy-note", "Tags: " {detail.tags.join(", ")} } }
                                         } else { p { class: "privacy-note", "Media information will appear here when available." } }
                                     }
                                 }

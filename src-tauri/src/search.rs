@@ -77,6 +77,27 @@ pub struct MediaDetailsRequest {
     pub candidate_id: i64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateMediaTagsRequest {
+    pub candidate_id: i64,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedMediaActionRequest {
+    pub candidate_id: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateMediaTagsResult {
+    pub candidate_id: i64,
+    pub tags: Vec<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaDetails {
@@ -245,6 +266,52 @@ pub fn media_details(
     })
 }
 
+/// Replaces an imported item's tag set after proving that its managed copy is still safe.
+pub fn update_media_tags(
+    request: UpdateMediaTagsRequest,
+) -> Result<UpdateMediaTagsResult, SearchError> {
+    let tags = normalize_tags(&request.tags);
+    library::with_catalogue(|connection, root| {
+        resolve_active_imported_item(connection, root, request.candidate_id)?;
+        let transaction = connection.unchecked_transaction().map_err(database_error)?;
+        transaction
+            .execute(
+                "DELETE FROM candidate_tags WHERE candidate_id = ?1",
+                [request.candidate_id],
+            )
+            .map_err(database_error)?;
+        for tag in &tags {
+            transaction
+                .execute(
+                    "INSERT INTO tags (normalized_name) VALUES (?1) ON CONFLICT(normalized_name) DO NOTHING",
+                    [tag],
+                )
+                .map_err(database_error)?;
+            transaction
+                .execute(
+                    "INSERT INTO candidate_tags (candidate_id, tag_id) SELECT ?1, id FROM tags WHERE normalized_name = ?2",
+                    rusqlite::params![request.candidate_id, tag],
+                )
+                .map_err(database_error)?;
+        }
+        transaction.commit().map_err(database_error)?;
+        Ok(UpdateMediaTagsResult {
+            candidate_id: request.candidate_id,
+            tags,
+        })
+    })
+}
+
+/// Returns only a validated managed path for native-only copy and reveal commands.
+pub fn managed_media_path(
+    request: ManagedMediaActionRequest,
+) -> Result<std::path::PathBuf, SearchError> {
+    library::with_catalogue(|connection, root| {
+        resolve_active_imported_item(connection, root, request.candidate_id)
+            .map(|item| item.destination)
+    })
+}
+
 pub fn search_library(
     app: tauri::AppHandle,
     request: SearchLibraryRequest,
@@ -409,10 +476,13 @@ pub fn recent_library_tags() -> Result<RecentTagsResult, SearchError> {
 }
 
 fn normalize_tags(tags: &[String]) -> Vec<String> {
-    tags.iter()
-        .map(|tag| normalize_tag(tag))
-        .filter(|tag| !tag.is_empty())
-        .collect()
+    let mut normalized = Vec::new();
+    for tag in tags.iter().map(|tag| normalize_tag(tag)) {
+        if !tag.is_empty() && !normalized.contains(&tag) {
+            normalized.push(tag);
+        }
+    }
+    normalized
 }
 
 fn normalize_tag(tag: &str) -> String {
@@ -790,5 +860,53 @@ mod tests {
             validate_managed_file(root.path(), &link).unwrap_err().code,
             "media_unavailable"
         );
+    }
+
+    #[test]
+    fn tag_updates_normalize_deduplicate_replace_and_validate_managed_items() {
+        let _session_guard = library::test_session_guard();
+        let directory = tempdir().unwrap();
+        library::setup_library(library::SetupLibraryRequest {
+            folder_path: directory.path().display().to_string(),
+            password: "correct horse battery staple".into(),
+            password_confirmation: "correct horse battery staple".into(),
+            recovery_question: "pet".into(),
+            recovery_answer: "Mochi".into(),
+        })
+        .unwrap();
+        let managed = directory.path().join("managed.jpg");
+        fs::write(&managed, b"managed").unwrap();
+        library::with_catalogue(|connection, _| {
+            connection.execute_batch("INSERT INTO review_sessions (id, source_path, state) VALUES (1, 'source', 'complete'); INSERT INTO review_candidates (id, session_id, relative_path, file_size, modified_at, media_type, decision) VALUES (1, 1, 'managed.jpg', 1, 0, 'image', 'imported'), (2, 1, 'skipped.jpg', 1, 0, 'image', 'skipped'); INSERT INTO item_decisions (candidate_id, decision, destination_path, effective_import_date) VALUES (2, 'skipped', NULL, '2026-09-09'); INSERT INTO tags (id, normalized_name) VALUES (1, 'old'); INSERT INTO candidate_tags (candidate_id, tag_id) VALUES (1, 1);").map_err(database_error)?;
+            connection.execute(
+                "INSERT INTO item_decisions (candidate_id, decision, destination_path, effective_import_date) VALUES (1, 'imported', ?1, '2026-09-09')",
+                [managed.display().to_string()],
+            ).map_err(database_error)?;
+            Ok::<(), SearchError>(())
+        })
+        .unwrap();
+
+        let result = update_media_tags(UpdateMediaTagsRequest {
+            candidate_id: 1,
+            tags: vec![" Summer ".into(), "summer".into(), "Family Album".into()],
+        })
+        .unwrap();
+        assert_eq!(result.tags, ["summer", "family album"]);
+        let tags = library::with_catalogue(|connection, _| tags_for_item(connection, 1)).unwrap();
+        assert_eq!(tags, ["family album", "summer"]);
+        assert_eq!(
+            managed_media_path(ManagedMediaActionRequest { candidate_id: 1 }).unwrap(),
+            managed.canonicalize().unwrap()
+        );
+        assert_eq!(
+            update_media_tags(UpdateMediaTagsRequest {
+                candidate_id: 2,
+                tags: vec!["forbidden".into()],
+            })
+            .unwrap_err()
+            .code,
+            "media_unavailable"
+        );
+        library::lock_library();
     }
 }
