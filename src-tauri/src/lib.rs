@@ -63,6 +63,14 @@ fn search_library(
 }
 
 #[tauri::command]
+fn media_details(
+    app: tauri::AppHandle,
+    request: search::MediaDetailsRequest,
+) -> Result<search::MediaDetails, search::SearchError> {
+    search::media_details(app, request)
+}
+
+#[tauri::command]
 fn list_library_tags(
     request: search::ListLibraryTagsRequest,
 ) -> Result<search::ListLibraryTagsResult, search::SearchError> {
@@ -272,6 +280,7 @@ pub fn run() {
             import_review_item,
             substitute_review_item,
             search_library,
+            media_details,
             list_library_tags,
             recent_library_tags,
             lock_library,

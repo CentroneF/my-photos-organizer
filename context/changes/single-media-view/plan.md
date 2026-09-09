@@ -252,13 +252,13 @@ No schema migration is required. Tag changes reuse `tags`/`candidate_tags`; dele
 
 #### Automated
 
-- [ ] 1.1 Run Rust tests for candidate resolution and unavailable preview states
-- [ ] 1.2 Run `cargo fmt --check`
+- [x] 1.1 Run Rust tests for candidate resolution and unavailable preview states
+- [x] 1.2 Run `cargo fmt --check`
 
 #### Manual
 
-- [ ] 1.3 Verify compact cards, full-window preview, keyboard navigation, and position indicators
-- [ ] 1.4 Verify image viewing controls, video playback controls, and recoverable preview failures
+- [x] 1.3 Verify compact cards, full-window preview, keyboard navigation, and position indicators
+- [x] 1.4 Verify image viewing controls, video playback controls, and recoverable preview failures
 
 ### Phase 2: Manage preview metadata and tags
 

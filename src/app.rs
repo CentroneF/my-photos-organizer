@@ -302,6 +302,7 @@ struct SearchLibraryResult {
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SearchLibraryItem {
+    candidate_id: i64,
     filename: String,
     media_type: String,
     effective_import_date: Option<String>,
@@ -309,6 +310,31 @@ struct SearchLibraryItem {
     tags: Vec<String>,
     preview_url: Option<String>,
     preview_state: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaDetailsRequest {
+    candidate_id: i64,
+}
+
+#[derive(Serialize)]
+struct MediaDetailsInvokeArgs {
+    request: MediaDetailsRequest,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaDetails {
+    state: String,
+    candidate_id: i64,
+    filename: String,
+    media_type: String,
+    tags: Vec<String>,
+    preview_url: Option<String>,
+    preview_state: String,
+    metadata: ReviewMetadata,
+    message: String,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -503,6 +529,12 @@ pub fn App() -> Element {
     let mut search_dates_expanded = use_signal(|| true);
     let mut search_media_expanded = use_signal(|| true);
     let mut search_tags_expanded = use_signal(|| true);
+    let mut preview_index = use_signal(|| None::<usize>);
+    let mut preview_detail = use_signal(|| None::<MediaDetails>);
+    let mut preview_loading = use_signal(|| false);
+    let mut preview_error = use_signal(String::new);
+    let mut preview_zoom = use_signal(|| 1_f32);
+    let mut preview_fit = use_signal(|| true);
 
     use_effect(move || {
         spawn(async move {
@@ -1230,6 +1262,60 @@ pub fn App() -> Element {
         }
     };
 
+    let mut load_preview = move |index: usize| {
+        let Some(item) = search_items().get(index).cloned() else {
+            return;
+        };
+        preview_index.set(Some(index));
+        preview_detail.set(None);
+        preview_error.set(String::new());
+        preview_loading.set(true);
+        preview_zoom.set(1.0);
+        preview_fit.set(true);
+        spawn(async move {
+            let request = MediaDetailsInvokeArgs {
+                request: MediaDetailsRequest {
+                    candidate_id: item.candidate_id,
+                },
+            };
+            match serde_wasm_bindgen::to_value(&request) {
+                Ok(args) => match invoke("media_details", args).await {
+                    Ok(value) => match serde_wasm_bindgen::from_value::<MediaDetails>(value) {
+                        Ok(detail) => preview_detail.set(Some(detail)),
+                        Err(_) => preview_error
+                            .set("The media details returned an unexpected response.".into()),
+                    },
+                    Err(value) => preview_error.set(command_error(
+                        value,
+                        "Could not load this managed media item.",
+                    )),
+                },
+                Err(_) => preview_error.set("Could not prepare this media preview.".into()),
+            }
+            preview_loading.set(false);
+        });
+    };
+    let mut close_preview = move || {
+        preview_index.set(None);
+        preview_detail.set(None);
+        preview_error.set(String::new());
+        preview_loading.set(false);
+    };
+    let mut previous_preview = move || {
+        if let Some(index) = preview_index() {
+            if index > 0 {
+                load_preview(index - 1);
+            }
+        }
+    };
+    let mut next_preview = move || {
+        if let Some(index) = preview_index() {
+            if index + 1 < search_items().len() {
+                load_preview(index + 1);
+            }
+        }
+    };
+
     let is_onboarding = matches!(step().as_str(), "loading" | "folder" | "stale");
     let shell_class = if is_onboarding {
         "app-shell"
@@ -1240,6 +1326,10 @@ pub fn App() -> Element {
         .date_origin
         .clone()
         .unwrap_or_else(|| "unavailable".into());
+    let active_preview = preview_index().and_then(|index| search_items().get(index).cloned());
+    let preview_position = preview_index()
+        .map(|index| format!("{} of {}", index + 1, search_items().len()))
+        .unwrap_or_default();
     let flow_panel_class = if step() == "review" {
         "flow-panel review-flow-panel"
     } else if step() == "home" {
@@ -1399,7 +1489,7 @@ pub fn App() -> Element {
                                     if !search_captured_start_date().is_empty() || !search_captured_end_date().is_empty() { p { class: "privacy-note", "Captured dates are available only for imports made after this feature was added. Earlier imports remain searchable by imported date." } }
                                     if search_loading() { p { class: "privacy-note", "Loading imported media…" } }
                                     if !search_loading() && search_items().is_empty() { div { class: "library-empty", "data-testid": "library-empty-state", if search_media_types().is_empty() { h3 { "No media types selected." } p { "Select Images or Videos to show matching imported media." } } else if !search_imported_start_date().is_empty() || !search_imported_end_date().is_empty() || !search_captured_start_date().is_empty() || !search_captured_end_date().is_empty() || search_media_types().len() != 2 || !search_selected_tags().is_empty() { h3 { "No media matches these filters." } p { "Adjust or clear filters to see other managed media." } } else { h3 { "No media has been imported yet." } p { "Use Import media to safely review a folder and create managed copies. Originals are never moved or deleted." } button { class: "primary-button", r#type: "button", onclick: move |_| step.set("import".into()), "Import media" } } } }
-                                    if !search_loading() && !search_items().is_empty() { div { class: "media-grid", "data-testid": "library-search-grid", for item in search_items() { article { class: "media-card", div { class: "media-card-preview", if item.preview_state == "available" && item.preview_url.is_some() { if item.media_type == "video" { VideoCardPreview { key: "{item.preview_url.clone().unwrap_or_default()}", preview_url: item.preview_url.clone().unwrap_or_default() } } else { img { src: "{item.preview_url.clone().unwrap_or_default()}", alt: "Preview of {item.filename}" } } } else { p { class: "preview-fallback", "Preview unavailable" } } } div { class: "media-card-details", strong { "{item.filename}" } small { "{item.media_type}" } small { "Selected: " {item.effective_import_date.clone().unwrap_or_else(|| "unavailable".into())} } small { "Original: " {item.original_media_date.clone().unwrap_or_else(|| "not recorded".into())} } if !item.tags.is_empty() { small { "Tags: " {item.tags.join(", ")} } } } } } } }
+                                    if !search_loading() && !search_items().is_empty() { div { class: "media-grid", "data-testid": "library-search-grid", for (index, item) in search_items().into_iter().enumerate() { button { class: "media-card", r#type: "button", "aria-label": "Open preview for {item.filename}", onclick: move |_| load_preview(index), div { class: "media-card-preview", if item.preview_state == "available" && item.preview_url.is_some() { if item.media_type == "video" { VideoCardPreview { key: "{item.preview_url.clone().unwrap_or_default()}", preview_url: item.preview_url.clone().unwrap_or_default() } } else { img { src: "{item.preview_url.clone().unwrap_or_default()}", alt: "Preview of {item.filename}" } } } else { p { class: "preview-fallback", "Preview unavailable" } } } } } } }
                                 }
                                 aside { class: "filter-sidebar", "aria-label": "Library filters",
                                     section { class: "filter-section",
@@ -1671,6 +1761,71 @@ pub fn App() -> Element {
                         }
                     }
 
+                    if let Some(selected) = active_preview {
+                        div { class: "media-preview-overlay",
+                            div {
+                                class: "media-preview-dialog",
+                                role: "dialog",
+                                "aria-modal": "true",
+                                "aria-label": "Preview of {selected.filename}",
+                                tabindex: "0",
+                                onkeydown: move |event| {
+                                    if event.key() == Key::Escape { close_preview(); }
+                                    else if event.key() == Key::ArrowLeft { previous_preview(); }
+                                    else if event.key() == Key::ArrowRight { next_preview(); }
+                                },
+                                div { class: "media-preview-content",
+                                    section { class: "media-preview-stage",
+                                        header { class: "media-preview-toolbar",
+                                            button { class: "secondary-button", r#type: "button", onclick: move |_| previous_preview(), disabled: preview_index() == Some(0), "aria-label": "Previous media", "←" }
+                                            strong { class: "media-preview-position", "{preview_position}" }
+                                            button { class: "secondary-button", r#type: "button", onclick: move |_| next_preview(), disabled: preview_index().is_none_or(|index| index + 1 >= search_items().len()), "aria-label": "Next media", "→" }
+                                            if selected.media_type == "image" {
+                                                div { class: "media-preview-zoom",
+                                                    button { class: "secondary-button", r#type: "button", onclick: move |_| { preview_fit.set(false); preview_zoom.set((preview_zoom() - 0.25).max(0.25)); }, "aria-label": "Zoom out", "🔍−" }
+                                                    button { class: "secondary-button", r#type: "button", onclick: move |_| { preview_fit.set(true); preview_zoom.set(1.0); }, "Fit" }
+                                                    button { class: "secondary-button", r#type: "button", onclick: move |_| { preview_fit.set(false); preview_zoom.set((preview_zoom() + 0.25).min(4.0)); }, "aria-label": "Zoom in", "🔍+" }
+                                                }
+                                            }
+                                            button { class: "secondary-button media-preview-close", r#type: "button", onclick: move |_| close_preview(), "Close" }
+                                        }
+                                        div { class: "media-preview-canvas",
+                                        if preview_loading() { p { class: "preview-fallback", "Loading managed media…" } }
+                                        if !preview_loading() && !preview_error().is_empty() {
+                                            div { class: "preview-failure", role: "alert", p { "{preview_error}" } button { class: "secondary-button", r#type: "button", onclick: move |_| { if let Some(index) = preview_index() { load_preview(index); } }, "Retry" } }
+                                        }
+                                        if let Some(detail) = preview_detail() {
+                                            if detail.preview_state == "available" && detail.preview_url.is_some() {
+                                                if detail.media_type == "video" { video { class: "media-preview media-preview-video", controls: true, preload: "metadata", src: "{detail.preview_url.clone().unwrap_or_default()}", onerror: move |_| preview_error.set("This video cannot be decoded by the embedded browser. Its details and navigation remain available.".into()) } }
+                                                else { img { class: if preview_fit() { "media-preview media-preview-fit" } else { "media-preview media-preview-actual" }, style: "transform: scale({preview_zoom});", src: "{detail.preview_url.clone().unwrap_or_default()}", alt: "Preview of {detail.filename}", onerror: move |_| preview_error.set("This image cannot be decoded by the embedded browser. Its details and navigation remain available.".into()) } }
+                                            } else { div { class: "preview-failure", role: "alert", p { "{detail.message}" } button { class: "secondary-button", r#type: "button", onclick: move |_| { if let Some(index) = preview_index() { load_preview(index); } }, "Retry" } } }
+                                        }
+                                        }
+                                    }
+                                    aside { class: "media-preview-info", "aria-label": "Media information",
+                                        if let Some(detail) = preview_detail() {
+                                            h2 { "{detail.filename}" }
+                                            p { class: "privacy-note", "{detail.media_type}" }
+                                            div { class: "review-metadata",
+                                                strong { "Media details" }
+                                                dl {
+                                                    div { dt { "Size" } dd { "{metadata_size(detail.metadata.file_size_bytes)}" } }
+                                                    div { dt { "Dimensions" } dd { "{metadata_dimensions(detail.metadata.width, detail.metadata.height)}" } }
+                                                    div { dt { "Created" } dd { "{metadata_value(detail.metadata.created_at.clone())}" } }
+                                                    div { dt { "Modified" } dd { "{metadata_value(detail.metadata.modified_at.clone())}" } }
+                                                    div { dt { "Captured" } dd { "{metadata_value(detail.metadata.captured_at.clone())}" } }
+                                                    div { dt { "Camera" } dd { "{metadata_value(detail.metadata.camera.clone())}" } }
+                                                    div { dt { "Orientation" } dd { "{metadata_value(detail.metadata.orientation.clone())}" } }
+                                                    div { dt { "GPS location" } dd { "{metadata_gps(detail.metadata.gps.clone())}" } }
+                                                }
+                                            }
+                                            if !detail.tags.is_empty() { p { class: "privacy-note", "Tags: " {detail.tags.join(", ")} } }
+                                        } else { p { class: "privacy-note", "Media information will appear here when available." } }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if let Some(matched) = selected_similar_match() {
                         div { class: "comparison-overlay",
                             div {

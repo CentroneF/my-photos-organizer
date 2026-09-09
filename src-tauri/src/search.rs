@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
 use crate::library::{self, SetupLibraryError};
+use crate::review::ReviewMetadata;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,6 +73,26 @@ pub struct SearchLibraryItem {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MediaDetailsRequest {
+    pub candidate_id: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaDetails {
+    pub state: &'static str,
+    pub candidate_id: i64,
+    pub filename: String,
+    pub media_type: String,
+    pub tags: Vec<String>,
+    pub preview_url: Option<String>,
+    pub preview_state: &'static str,
+    pub metadata: ReviewMetadata,
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ListLibraryTagsRequest {
     #[serde(default)]
     pub query: Option<String>,
@@ -111,6 +132,117 @@ struct CatalogueItem {
     effective_import_date: Option<String>,
     original_media_date: Option<String>,
     tags: Vec<String>,
+}
+
+struct ResolvedImportedItem {
+    candidate_id: i64,
+    destination: std::path::PathBuf,
+    media_type: String,
+    tags: Vec<String>,
+}
+
+/// Resolves only current managed copies. Callers never receive or accept arbitrary paths.
+fn resolve_active_imported_item(
+    connection: &Connection,
+    root: &Path,
+    candidate_id: i64,
+) -> Result<ResolvedImportedItem, SearchError> {
+    let (destination_path, media_type): (String, String) = connection
+        .query_row(
+            "SELECT d.destination_path, c.media_type FROM item_decisions d JOIN review_candidates c ON c.id = d.candidate_id WHERE d.candidate_id = ?1 AND d.decision = 'imported' AND d.destination_path IS NOT NULL AND d.replaced_by_candidate_id IS NULL",
+            [candidate_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|value| match value {
+            rusqlite::Error::QueryReturnedNoRows => error(
+                "media_unavailable",
+                "This managed media item is no longer available in the active library.",
+            ),
+            other => database_error(other),
+        })?;
+    let destination = validate_managed_file(root, Path::new(&destination_path))?;
+    Ok(ResolvedImportedItem {
+        candidate_id,
+        destination,
+        media_type,
+        tags: tags_for_item(connection, candidate_id)?,
+    })
+}
+
+fn validate_managed_file(
+    root: &Path,
+    destination: &Path,
+) -> Result<std::path::PathBuf, SearchError> {
+    let root = root.canonicalize().map_err(|_| {
+        error(
+            "media_unavailable",
+            "The protected library is unavailable. Unlock it again and retry.",
+        )
+    })?;
+    let metadata = fs::symlink_metadata(destination).map_err(|_| {
+        error(
+            "media_unavailable",
+            "The managed media file is missing or cannot be read.",
+        )
+    })?;
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || fs::File::open(destination).is_err()
+    {
+        return Err(error(
+            "media_unavailable",
+            "The managed media file is missing or cannot be read.",
+        ));
+    }
+    let destination = destination.canonicalize().map_err(|_| {
+        error(
+            "media_unavailable",
+            "The managed media file is missing or cannot be read.",
+        )
+    })?;
+    if !destination.starts_with(&root) || destination.starts_with(root.join(".photo-handler")) {
+        return Err(error(
+            "media_unavailable",
+            "The selected file is outside the managed media library.",
+        ));
+    }
+    Ok(destination)
+}
+
+pub fn media_details(
+    app: tauri::AppHandle,
+    request: MediaDetailsRequest,
+) -> Result<MediaDetails, SearchError> {
+    let (item, root) = library::with_catalogue(|connection, root| {
+        resolve_active_imported_item(connection, root, request.candidate_id)
+            .map(|item| (item, root.to_path_buf()))
+    })?;
+    let (preview_url, preview_state) = safe_preview_url(&app, &root, &item.destination);
+    let available = preview_state == "available";
+    Ok(MediaDetails {
+        state: if available {
+            "available"
+        } else {
+            "unavailable"
+        },
+        candidate_id: item.candidate_id,
+        filename: item
+            .destination
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+        media_type: item.media_type,
+        tags: item.tags,
+        preview_url,
+        preview_state,
+        metadata: crate::review::review_metadata(&item.destination),
+        message: if available {
+            "Managed media is ready for preview.".into()
+        } else {
+            "This managed media file is unavailable or cannot be previewed safely.".into()
+        },
+    })
 }
 
 pub fn search_library(
@@ -614,5 +746,49 @@ mod tests {
         assert!(validate_date_range(Some("2026-08-21"), Some("2026-08-20")).is_err());
         assert!(validate_date_range(Some("2026-08-20"), Some("2026-08-21")).is_ok());
         assert!(validate_date_range(None, Some("2026-08-21")).is_ok());
+    }
+
+    #[test]
+    fn managed_file_validation_rejects_missing_and_outside_files() {
+        let root = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let managed = root.path().join("managed.jpg");
+        fs::write(&managed, b"managed").unwrap();
+        fs::write(outside.path().join("outside.jpg"), b"outside").unwrap();
+
+        assert_eq!(
+            validate_managed_file(root.path(), &managed).unwrap(),
+            managed.canonicalize().unwrap()
+        );
+        assert_eq!(
+            validate_managed_file(root.path(), &root.path().join("missing.jpg"))
+                .unwrap_err()
+                .code,
+            "media_unavailable"
+        );
+        assert_eq!(
+            validate_managed_file(root.path(), &outside.path().join("outside.jpg"))
+                .unwrap_err()
+                .code,
+            "media_unavailable"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_file_validation_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let target = outside.path().join("outside.jpg");
+        fs::write(&target, b"outside").unwrap();
+        let link = root.path().join("linked.jpg");
+        symlink(&target, &link).unwrap();
+
+        assert_eq!(
+            validate_managed_file(root.path(), &link).unwrap_err().code,
+            "media_unavailable"
+        );
     }
 }

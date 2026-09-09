@@ -775,7 +775,7 @@ fn stable_metadata(path: &Path) -> Result<(i64, i64), String> {
     Ok((metadata.len() as i64, modified))
 }
 
-fn review_metadata(path: &Path) -> ReviewMetadata {
+pub(crate) fn review_metadata(path: &Path) -> ReviewMetadata {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_file() && !metadata.file_type().is_symlink() => {
             metadata
