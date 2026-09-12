@@ -281,5 +281,5 @@ No schema migration is required. Tag changes reuse `tags`/`candidate_tags`; dele
 
 #### Manual
 
-- [x] 3.3 Verify immediate managed-copy rotation, preview refresh, and unsupported-media controls
-- [x] 3.4 Verify Trash deletion, result navigation, and original-source preservation
+- [x] 3.3 Verify immediate managed-copy rotation, preview refresh, and unsupported-media controls — 178f6c6
+- [x] 3.4 Verify Trash deletion, result navigation, and original-source preservation — 178f6c6
