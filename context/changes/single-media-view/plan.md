@@ -276,8 +276,8 @@ No schema migration is required. Tag changes reuse `tags`/`candidate_tags`; dele
 
 #### Automated
 
-- [x] 3.1 Run Rust tests for immediate rotation, Trash deletion, and mutation failures
-- [x] 3.2 Run `cargo fmt --check`
+- [x] 3.1 Run Rust tests for immediate rotation, Trash deletion, and mutation failures — 178f6c6
+- [x] 3.2 Run `cargo fmt --check` — 7ef4a6c
 
 #### Manual
 
