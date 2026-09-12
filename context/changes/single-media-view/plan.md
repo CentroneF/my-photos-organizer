@@ -10,7 +10,7 @@ Library search already returns active imported records in a stable order, but it
 
 ## Desired End State
 
-Clicking a search thumbnail opens an accessible, full-window preview over the unchanged filtered result set. The user can inspect the item and edit its tags immediately, navigate without wrapping, recover from preview failures, and use safe rotation or Trash deletion only after explicit confirmation. Every filesystem action is authorized by an opaque candidate ID and revalidated against the unlocked managed library.
+Clicking a search thumbnail opens an accessible, full-window preview over the unchanged filtered result set. The user can inspect the item and edit its tags immediately, navigate without wrapping, recover from preview failures, rotate the managed image immediately, and send a managed copy to Trash only after explicit confirmation. Every filesystem action is authorized by an opaque candidate ID and revalidated against the unlocked managed library.
 
 ### Key Discoveries:
 
@@ -30,7 +30,7 @@ Clicking a search thumbnail opens an accessible, full-window preview over the un
 
 ## Implementation Approach
 
-Keep the filtered `search_items` vector and an optional selected index in `App`; this preserves the searched-list context for the position indicator and left/right navigation. Add candidate-ID-only native commands in the search module, all built on one resolver that proves the item is an active imported record and that its managed path is a readable non-symlink under the active library. Deliver the read-only preview first, metadata/tag tools second, and confirmed filesystem mutations last, so every phase can be manually exercised from the search UI.
+Keep the filtered `search_items` vector and an optional selected index in `App`; this preserves the searched-list context for the position indicator and left/right navigation. Add candidate-ID-only native commands in the search module, all built on one resolver that proves the item is an active imported record and that its managed path is a readable non-symlink under the active library. Deliver the read-only preview first, metadata/tag tools second, and managed-copy mutations last, so every phase can be manually exercised from the search UI.
 
 ## Critical Implementation Details
 
@@ -156,7 +156,7 @@ Make the information panel a persistent, immediately saved metadata workspace wi
 
 ### Overview
 
-Add explicit-confirmation rotation and deletion for managed copies only, preserving original media and keeping preview navigation consistent after mutations.
+Add immediate managed-copy rotation and confirmed deletion, preserving original media and keeping preview navigation consistent after mutations.
 
 ### Changes Required:
 
@@ -164,15 +164,15 @@ Add explicit-confirmation rotation and deletion for managed copies only, preserv
 
 **File**: `src-tauri/src/search.rs`
 
-**Intent**: Implement safe, candidate-scoped image rotation and Trash deletion after the frontend has obtained explicit user confirmation.
+**Intent**: Implement safe, candidate-scoped image rotation and confirmed Trash deletion.
 
-**Contract**: Both requests include `candidate_id` and `confirmed`; Rust rejects unconfirmed requests. Rotation accepts a direction only for supported image codecs, writes a flushed same-directory temporary output before replacement, then returns refreshed details; it must return a clear unsupported error for video, HEIC, corrupt, or unsupported formats. Deletion moves the validated managed copy to the OS Trash first, then sets its active imported decision's `destination_path` to `NULL`, retaining catalogue history while removing it from search.
+**Contract**: Rotation accepts only `candidate_id` and direction; it immediately overwrites the supported managed image via a flushed same-directory temporary output, returns refreshed details with a cache-busting preview URL, and rejects video, HEIC, corrupt, or unsupported formats. Deletion includes `candidate_id` and `confirmed`; Rust rejects unconfirmed deletion and moves the validated managed copy to the OS Trash before setting its active imported decision's `destination_path` to `NULL`.
 
 #### 2. Mutation command registration
 
 **File**: `src-tauri/src/lib.rs`
 
-**Intent**: Register confirmed rotate and delete commands with the same request/response boundary as the preview details commands.
+**Intent**: Register rotate and confirmed-delete commands with the same request/response boundary as the preview details commands.
 
 **Contract**: Commands expose no arbitrary path input and return structured errors that let the preview retain context after failure.
 
@@ -180,9 +180,9 @@ Add explicit-confirmation rotation and deletion for managed copies only, preserv
 
 **File**: `src/app.rs`
 
-**Intent**: Offer rotation and delete toolbar controls only where supported, require a clear managed-copy overwrite or Trash confirmation, and reconcile the selected result after success.
+**Intent**: Offer immediate rotation and confirmed delete toolbar controls only where supported, and reconcile the selected result after success.
 
-**Contract**: The rotation dialog says it overwrites the managed copy and refreshes image URL/cache state plus metadata after success. The delete dialog identifies the managed filename, removes the deleted ID from `search_items` only after native success, selects the next item at the same index, selects the previous item if the final item was deleted, and closes when no results remain.
+**Contract**: Rotation immediately overwrites only the managed copy and refreshes its versioned image URL/cache state plus metadata after success. The delete dialog identifies the managed filename, removes the deleted ID from `search_items` only after native success, selects the next item at the same index, selects the previous item if the final item was deleted, and closes when no results remain.
 
 #### 4. Destructive-action styling and accessible dialogs
 
@@ -196,12 +196,12 @@ Add explicit-confirmation rotation and deletion for managed copies only, preserv
 
 #### Automated Verification:
 
-- `cargo test --workspace` passes with tests for unconfirmed rotation/deletion rejection, managed-root/symlink/missing-path rejection, Trash failure preserving catalogue state, successful deletion hiding the item, and supported-image rotation without partial overwrite.
+- `cargo test --workspace` passes with tests for immediate managed-image rotation, unconfirmed deletion rejection, managed-root/symlink/missing-path rejection, Trash failure preserving catalogue state, successful deletion hiding the item, and supported-image rotation without partial overwrite.
 - `cargo fmt --check` passes.
 
 #### Manual Verification:
 
-- Rotation buttons are absent for videos and unsupported images; supported-image rotation requires confirmation and changes only the managed copy.
+- Rotation buttons are absent for videos and unsupported images; supported-image rotation immediately changes only the managed copy and refreshes the open preview.
 - Delete requires confirmation, moves only the managed copy to the OS Trash, leaves the original import source intact, updates the counter, and opens the next/previous result according to the agreed boundary behavior.
 - Cancelling or failing either mutation preserves the preview and explains what happened.
 
@@ -276,10 +276,10 @@ No schema migration is required. Tag changes reuse `tags`/`candidate_tags`; dele
 
 #### Automated
 
-- [ ] 3.1 Run Rust tests for confirmed rotation, Trash deletion, and mutation failures
+- [x] 3.1 Run Rust tests for immediate rotation, Trash deletion, and mutation failures
 - [x] 3.2 Run `cargo fmt --check`
 
 #### Manual
 
-- [ ] 3.3 Verify confirmed managed-copy rotation and unsupported-media controls
-- [ ] 3.4 Verify Trash deletion, result navigation, and original-source preservation
+- [x] 3.3 Verify immediate managed-copy rotation, preview refresh, and unsupported-media controls
+- [x] 3.4 Verify Trash deletion, result navigation, and original-source preservation

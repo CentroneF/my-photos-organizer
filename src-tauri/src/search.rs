@@ -100,7 +100,6 @@ pub struct ManagedMediaActionRequest {
 #[serde(rename_all = "camelCase")]
 pub struct RotateManagedMediaRequest {
     pub candidate_id: i64,
-    pub confirmed: bool,
     pub direction: RotationDirection,
 }
 
@@ -273,6 +272,7 @@ pub fn media_details(
             .map(|item| (item, root.to_path_buf()))
     })?;
     let (preview_url, preview_state) = safe_preview_url(&app, &root, &item.destination);
+    let preview_url = preview_url.map(|url| versioned_preview_url(url, &item.destination));
     let available = preview_state == "available";
     Ok(MediaDetails {
         state: if available {
@@ -299,6 +299,19 @@ pub fn media_details(
             "This managed media file is unavailable or cannot be previewed safely.".into()
         },
     })
+}
+
+fn versioned_preview_url(url: String, destination: &Path) -> String {
+    let revision = fs::metadata(destination)
+        .and_then(|metadata| metadata.modified())
+        .and_then(|modified| {
+            modified
+                .duration_since(UNIX_EPOCH)
+                .map_err(std::io::Error::other)
+        })
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("{url}?revision={revision}")
 }
 
 fn supports_rotation(destination: &Path) -> bool {
@@ -360,17 +373,11 @@ pub fn managed_media_path(
     })
 }
 
-/// Rotates a validated managed image only after an explicit confirmation.
+/// Rotates a validated managed image, overwriting only the managed copy.
 pub fn rotate_managed_media(
     app: tauri::AppHandle,
     request: RotateManagedMediaRequest,
 ) -> Result<MediaDetails, SearchError> {
-    if !request.confirmed {
-        return Err(error(
-            "confirmation_required",
-            "Confirm overwriting the managed copy before rotating it.",
-        ));
-    }
     let item = library::with_catalogue(|connection, root| {
         resolve_active_imported_item(connection, root, request.candidate_id)
     })?;

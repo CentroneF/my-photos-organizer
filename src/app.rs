@@ -38,10 +38,18 @@ export function warm_video_preview(video) {
     });
   });
 }
+
+export function focus_media_preview() {
+  requestAnimationFrame(() => {
+    document.querySelector("[data-media-preview-dialog]")?.focus();
+  });
+}
 "#)]
 extern "C" {
     #[wasm_bindgen(catch)]
     fn warm_video_preview(video: &web_sys::HtmlVideoElement) -> Result<js_sys::Promise, JsValue>;
+
+    fn focus_media_preview();
 }
 
 #[derive(Serialize)]
@@ -355,7 +363,6 @@ struct ManagedMediaActionRequest {
 #[serde(rename_all = "camelCase")]
 struct RotateManagedMediaRequest {
     candidate_id: i64,
-    confirmed: bool,
     direction: String,
 }
 
@@ -374,14 +381,7 @@ struct DeleteManagedMediaResult {
 
 #[derive(Clone)]
 enum PreviewMutation {
-    Rotate {
-        candidate_id: i64,
-        direction: &'static str,
-    },
-    Delete {
-        candidate_id: i64,
-        filename: String,
-    },
+    Delete { candidate_id: i64, filename: String },
 }
 
 #[derive(Serialize)]
@@ -480,6 +480,11 @@ fn video_target(event: &MediaEvent) -> Option<web_sys::HtmlVideoElement> {
         .downcast::<web_sys::Event>()
         .and_then(|event| event.target())
         .and_then(|target| target.dyn_into::<web_sys::HtmlVideoElement>().ok())
+}
+
+fn cache_busted_preview_url(url: &str, revision: u64) -> String {
+    let separator = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{separator}preview_revision={revision}")
 }
 
 #[component]
@@ -602,6 +607,7 @@ pub fn App() -> Element {
     let mut preview_error = use_signal(String::new);
     let mut preview_zoom = use_signal(|| 1_f32);
     let mut preview_fit = use_signal(|| true);
+    let mut preview_media_revision = use_signal(|| 0_u64);
     let mut preview_info_collapsed = use_signal(|| false);
     let mut preview_tag_draft = use_signal(String::new);
     let mut preview_tag_options = use_signal(Vec::<String>::new);
@@ -1546,6 +1552,48 @@ pub fn App() -> Element {
         });
     });
 
+    let mut rotate_preview = move |candidate_id: i64, direction: &'static str| {
+        preview_mutation_busy.set(true);
+        preview_error.set(String::new());
+        spawn(async move {
+            let request = PreviewInvokeArgs {
+                request: RotateManagedMediaRequest {
+                    candidate_id,
+                    direction: direction.into(),
+                },
+            };
+            match serde_wasm_bindgen::to_value(&request) {
+                Ok(args) => match invoke("rotate_managed_media", args).await {
+                    Ok(value) => match serde_wasm_bindgen::from_value::<MediaDetails>(value) {
+                        Ok(detail) => {
+                            let refreshed_preview_url = detail.preview_url.clone();
+                            let refreshed_preview_state = detail.preview_state.clone();
+                            search_items.with_mut(|items| {
+                                if let Some(item) = items
+                                    .iter_mut()
+                                    .find(|item| item.candidate_id == detail.candidate_id)
+                                {
+                                    item.preview_url = refreshed_preview_url;
+                                    item.preview_state = refreshed_preview_state;
+                                }
+                            });
+                            preview_detail.set(Some(detail));
+                            preview_media_revision.with_mut(|revision| *revision += 1);
+                            preview_zoom.set(1.0);
+                            preview_fit.set(true);
+                        }
+                        Err(_) => preview_error
+                            .set("The rotated media returned an unexpected response.".into()),
+                    },
+                    Err(value) => preview_error
+                        .set(command_error(value, "Could not rotate the managed copy.")),
+                },
+                Err(_) => preview_error.set("Could not prepare the managed-copy rotation.".into()),
+            }
+            preview_mutation_busy.set(false);
+        });
+    };
+
     let mut confirm_preview_mutation = move || {
         let Some(mutation) = preview_mutation_confirmation() else {
             return;
@@ -1554,80 +1602,45 @@ pub fn App() -> Element {
         preview_mutation_busy.set(true);
         preview_error.set(String::new());
         spawn(async move {
-            match mutation {
-                PreviewMutation::Rotate {
+            let PreviewMutation::Delete { candidate_id, .. } = mutation;
+            let request = PreviewInvokeArgs {
+                request: DeleteManagedMediaRequest {
                     candidate_id,
-                    direction,
-                } => {
-                    let request = PreviewInvokeArgs {
-                        request: RotateManagedMediaRequest {
-                            candidate_id,
-                            confirmed: true,
-                            direction: direction.into(),
-                        },
-                    };
-                    match serde_wasm_bindgen::to_value(&request) {
-                        Ok(args) => match invoke("rotate_managed_media", args).await {
-                            Ok(value) => {
-                                match serde_wasm_bindgen::from_value::<MediaDetails>(value) {
-                                    Ok(detail) => {
-                                        preview_detail.set(Some(detail));
-                                        preview_zoom.set(1.0);
-                                        preview_fit.set(true);
-                                    }
-                                    Err(_) => preview_error.set(
-                                        "The rotated media returned an unexpected response.".into(),
-                                    ),
-                                }
-                            }
-                            Err(value) => preview_error
-                                .set(command_error(value, "Could not rotate the managed copy.")),
-                        },
-                        Err(_) => {
-                            preview_error.set("Could not prepare the managed-copy rotation.".into())
-                        }
-                    }
-                }
-                PreviewMutation::Delete { candidate_id, .. } => {
-                    let request = PreviewInvokeArgs {
-                        request: DeleteManagedMediaRequest {
-                            candidate_id,
-                            confirmed: true,
-                        },
-                    };
-                    match serde_wasm_bindgen::to_value(&request) {
-                        Ok(args) => match invoke("delete_managed_media", args).await {
-                            Ok(value) => match serde_wasm_bindgen::from_value::<
-                                DeleteManagedMediaResult,
-                            >(value)
-                            {
-                                Ok(result) if result.candidate_id == candidate_id => {
-                                    let next = search_items.with_mut(|items| {
-                                        let Some(deleted_index) = items
-                                            .iter()
-                                            .position(|item| item.candidate_id == candidate_id)
-                                        else {
-                                            return None;
-                                        };
-                                        items.remove(deleted_index);
-                                        (!items.is_empty()).then(|| {
-                                            (
-                                                deleted_index.min(items.len() - 1),
-                                                items[deleted_index.min(items.len() - 1)].clone(),
-                                            )
-                                        })
-                                    });
-                                    search_refresh.with_mut(|revision| *revision += 1);
-                                    if let Some((index, item)) = next {
-                                        preview_index.set(Some(index));
-                                        preview_detail.set(None);
-                                        preview_loading.set(true);
-                                        let details_request = MediaDetailsInvokeArgs {
-                                            request: MediaDetailsRequest {
-                                                candidate_id: item.candidate_id,
-                                            },
-                                        };
-                                        match serde_wasm_bindgen::to_value(&details_request) {
+                    confirmed: true,
+                },
+            };
+            match serde_wasm_bindgen::to_value(&request) {
+                Ok(args) => match invoke("delete_managed_media", args).await {
+                    Ok(value) => {
+                        match serde_wasm_bindgen::from_value::<DeleteManagedMediaResult>(value) {
+                            Ok(result) if result.candidate_id == candidate_id => {
+                                let next = search_items.with_mut(|items| {
+                                    let Some(deleted_index) = items
+                                        .iter()
+                                        .position(|item| item.candidate_id == candidate_id)
+                                    else {
+                                        return None;
+                                    };
+                                    items.remove(deleted_index);
+                                    (!items.is_empty()).then(|| {
+                                        (
+                                            deleted_index.min(items.len() - 1),
+                                            items[deleted_index.min(items.len() - 1)].clone(),
+                                        )
+                                    })
+                                });
+                                search_refresh.with_mut(|revision| *revision += 1);
+                                if let Some((index, item)) = next {
+                                    preview_index.set(Some(index));
+                                    focus_media_preview();
+                                    preview_detail.set(None);
+                                    preview_loading.set(true);
+                                    let details_request = MediaDetailsInvokeArgs {
+                                        request: MediaDetailsRequest {
+                                            candidate_id: item.candidate_id,
+                                        },
+                                    };
+                                    match serde_wasm_bindgen::to_value(&details_request) {
                                             Ok(args) => match invoke("media_details", args).await {
                                                 Ok(value) => match serde_wasm_bindgen::from_value::<MediaDetails>(value) {
                                                     Ok(detail) => preview_detail.set(Some(detail)),
@@ -1637,29 +1650,25 @@ pub fn App() -> Element {
                                             },
                                             Err(_) => preview_error.set("Could not prepare the next media preview.".into()),
                                         }
-                                        preview_loading.set(false);
-                                    } else {
-                                        preview_index.set(None);
-                                        preview_detail.set(None);
-                                    }
+                                    preview_loading.set(false);
+                                } else {
+                                    preview_index.set(None);
+                                    preview_detail.set(None);
                                 }
-                                Ok(_) => preview_error.set(
-                                    "The deletion response did not match the selected media."
-                                        .into(),
-                                ),
-                                Err(_) => preview_error
-                                    .set("The deletion returned an unexpected response.".into()),
-                            },
-                            Err(value) => preview_error.set(command_error(
-                                value,
-                                "Could not move the managed copy to Trash.",
-                            )),
-                        },
-                        Err(_) => {
-                            preview_error.set("Could not prepare the managed-copy deletion.".into())
+                            }
+                            Ok(_) => preview_error.set(
+                                "The deletion response did not match the selected media.".into(),
+                            ),
+                            Err(_) => preview_error
+                                .set("The deletion returned an unexpected response.".into()),
                         }
                     }
-                }
+                    Err(value) => preview_error.set(command_error(
+                        value,
+                        "Could not move the managed copy to Trash.",
+                    )),
+                },
+                Err(_) => preview_error.set("Could not prepare the managed-copy deletion.".into()),
             }
             preview_mutation_busy.set(false);
         });
@@ -1695,6 +1704,7 @@ pub fn App() -> Element {
     };
 
     rsx! {
+        link { rel: "stylesheet", href: "/assets/fontawesome/css/all.min.css" }
         link { rel: "stylesheet", href: CSS }
         main { class: "{shell_class}",
             if is_onboarding {
@@ -2114,6 +2124,8 @@ pub fn App() -> Element {
                         div { class: "media-preview-overlay",
                             div {
                                 class: "media-preview-dialog",
+                                key: "{selected.candidate_id}",
+                                "data-media-preview-dialog": "true",
                                 role: "dialog",
                                 "aria-modal": "true",
                                 "aria-label": "Preview of {selected.filename}",
@@ -2129,36 +2141,63 @@ pub fn App() -> Element {
                                 div { class: if preview_info_collapsed() { "media-preview-content media-preview-content-info-hidden" } else { "media-preview-content" },
                                     section { class: "media-preview-stage",
                                         header { class: "media-preview-toolbar",
-                                            button { class: "secondary-button", r#type: "button", onclick: move |_| previous_preview(), disabled: preview_index() == Some(0), "aria-label": "Previous media", "←" }
-                                            strong { class: "media-preview-position", "{preview_position}" }
-                                            button { class: "secondary-button", r#type: "button", onclick: move |_| next_preview(), disabled: preview_index().is_none_or(|index| index + 1 >= search_items().len()), "aria-label": "Next media", "→" }
+                                            div { class: "media-preview-navigation",
+                                                button { class: "secondary-button", r#type: "button", onclick: move |_| previous_preview(), disabled: preview_index() == Some(0), "aria-label": "Previous media", title: "Previous media",
+                                                    i { class: "fa-solid fa-chevron-left", "aria-hidden": "true" }
+                                                }
+                                                strong { class: "media-preview-position", "{preview_position}" }
+                                                button { class: "secondary-button", r#type: "button", onclick: move |_| next_preview(), disabled: preview_index().is_none_or(|index| index + 1 >= search_items().len()), "aria-label": "Next media", title: "Next media",
+                                                    i { class: "fa-solid fa-chevron-right", "aria-hidden": "true" }
+                                                }
+                                            }
                                             if selected.media_type == "image" {
                                                 div { class: "media-preview-zoom",
-                                                    button { class: "secondary-button", r#type: "button", onclick: move |_| { preview_fit.set(false); preview_zoom.set((preview_zoom() - 0.25).max(0.25)); }, "aria-label": "Zoom out", "🔍−" }
-                                                    button { class: "secondary-button", r#type: "button", onclick: move |_| { preview_fit.set(true); preview_zoom.set(1.0); }, "Fit" }
-                                                    button { class: "secondary-button", r#type: "button", onclick: move |_| { preview_fit.set(false); preview_zoom.set(1.0); }, "100%" }
-                                                    button { class: "secondary-button", r#type: "button", onclick: move |_| { preview_fit.set(false); preview_zoom.set((preview_zoom() + 0.25).min(4.0)); }, "aria-label": "Zoom in", "🔍+" }
+                                                    button { class: "secondary-button", r#type: "button", onclick: move |_| { preview_fit.set(false); preview_zoom.set((preview_zoom() - 0.25).max(0.25)); }, "aria-label": "Zoom out", title: "Zoom out",
+                                                        i { class: "fa-solid fa-magnifying-glass-minus", "aria-hidden": "true" }
+                                                    }
+                                                    button { class: "secondary-button", r#type: "button", onclick: move |_| { preview_fit.set(true); preview_zoom.set(1.0); }, "aria-label": "Fit image to window", title: "Fit image to window",
+                                                        i { class: "fa-solid fa-compress", "aria-hidden": "true" }
+                                                    }
+                                                    button { class: "secondary-button", r#type: "button", onclick: move |_| { preview_fit.set(false); preview_zoom.set(1.0); }, "aria-label": "Show image at actual size", title: "Show image at actual size",
+                                                        i { class: "fa-solid fa-expand", "aria-hidden": "true" }
+                                                    }
+                                                    button { class: "secondary-button", r#type: "button", onclick: move |_| { preview_fit.set(false); preview_zoom.set((preview_zoom() + 0.25).min(4.0)); }, "aria-label": "Zoom in", title: "Zoom in",
+                                                        i { class: "fa-solid fa-magnifying-glass-plus", "aria-hidden": "true" }
+                                                    }
                                                 }
                                             }
                                             if let Some(detail) = preview_detail().filter(|detail| detail.rotation_supported) {
-                                                button { class: "secondary-button", r#type: "button", disabled: preview_mutation_busy(), onclick: move |_| preview_mutation_confirmation.set(Some(PreviewMutation::Rotate { candidate_id: detail.candidate_id, direction: "left" })), "aria-label": "Rotate managed image left", "↺" }
-                                                button { class: "secondary-button", r#type: "button", disabled: preview_mutation_busy(), onclick: move |_| preview_mutation_confirmation.set(Some(PreviewMutation::Rotate { candidate_id: detail.candidate_id, direction: "right" })), "aria-label": "Rotate managed image right", "↻" }
+                                                button { class: "secondary-button", r#type: "button", disabled: preview_mutation_busy(), onclick: move |_| rotate_preview(detail.candidate_id, "left"), "aria-label": "Rotate managed image left", title: "Rotate managed image left",
+                                                    i { class: "fa-solid fa-rotate-left", "aria-hidden": "true" }
+                                                }
+                                                button { class: "secondary-button", r#type: "button", disabled: preview_mutation_busy(), onclick: move |_| rotate_preview(detail.candidate_id, "right"), "aria-label": "Rotate managed image right", title: "Rotate managed image right",
+                                                    i { class: "fa-solid fa-rotate-right", "aria-hidden": "true" }
+                                                }
                                             }
-                                            if let Some(detail) = preview_detail() {
-                                                button { class: "secondary-button preview-delete-button", r#type: "button", disabled: preview_mutation_busy(), onclick: move |_| preview_mutation_confirmation.set(Some(PreviewMutation::Delete { candidate_id: detail.candidate_id, filename: detail.filename.clone() })), "Delete" }
+                                            div { class: "media-preview-actions",
+                                                if let Some(detail) = preview_detail() {
+                                                    button { class: "secondary-button preview-delete-button", r#type: "button", disabled: preview_mutation_busy(), "aria-label": "Move managed copy to Trash", title: "Move managed copy to Trash", onclick: move |_| preview_mutation_confirmation.set(Some(PreviewMutation::Delete { candidate_id: detail.candidate_id, filename: detail.filename.clone() })),
+                                                        i { class: "fa-solid fa-trash-can", "aria-hidden": "true" }
+                                                    }
+                                                }
+                                                button { class: "secondary-button media-preview-close", r#type: "button", "aria-label": "Close preview", title: "Close preview", onclick: move |_| close_preview(),
+                                                    i { class: "fa-solid fa-xmark", "aria-hidden": "true" }
+                                                }
                                             }
-                                            button { class: "secondary-button media-preview-close", r#type: "button", onclick: move |_| close_preview(), "Close" }
-                                            button { class: "secondary-button", r#type: "button", "aria-expanded": "{!preview_info_collapsed()}", "aria-label": if preview_info_collapsed() { "Show media information" } else { "Hide media information" }, title: if preview_info_collapsed() { "Show media information" } else { "Hide media information" }, onclick: move |_| preview_info_collapsed.set(!preview_info_collapsed()), if preview_info_collapsed() { "<" } else { ">" } }
+                                            button { class: "secondary-button", r#type: "button", "aria-expanded": "{!preview_info_collapsed()}", "aria-label": if preview_info_collapsed() { "Show media information" } else { "Hide media information" }, title: if preview_info_collapsed() { "Show media information" } else { "Hide media information" }, onclick: move |_| preview_info_collapsed.set(!preview_info_collapsed()),
+                                                i { class: "fa-solid fa-circle-info", "aria-hidden": "true" }
+                                            }
                                         }
                                         div { class: "media-preview-canvas",
                                         if preview_loading() { p { class: "preview-fallback", "Loading managed media…" } }
+                                        if preview_mutation_busy() { p { class: "preview-mutation-status", role: "status", "Updating managed media…" } }
                                         if !preview_loading() && !preview_error().is_empty() {
                                             div { class: "preview-failure", role: "alert", p { "{preview_error}" } button { class: "secondary-button", r#type: "button", onclick: move |_| { if let Some(index) = preview_index() { load_preview(index); } }, "Retry" } }
                                         }
                                         if let Some(detail) = preview_detail() {
                                             if detail.preview_state == "available" && detail.preview_url.is_some() {
                                                 if detail.media_type == "video" { video { class: "media-preview media-preview-video", controls: true, preload: "metadata", src: "{detail.preview_url.clone().unwrap_or_default()}", onerror: move |_| preview_error.set("This video cannot be decoded by the embedded browser. Its details and navigation remain available.".into()) } }
-                                                else { img { class: if preview_fit() { "media-preview media-preview-fit" } else { "media-preview media-preview-actual" }, style: "transform: scale({preview_zoom});", src: "{detail.preview_url.clone().unwrap_or_default()}", alt: "Preview of {detail.filename}", onerror: move |_| preview_error.set("This image cannot be decoded by the embedded browser. Its details and navigation remain available.".into()) } }
+                                                else { img { class: if preview_fit() { "media-preview media-preview-fit" } else { "media-preview media-preview-actual" }, style: "transform: scale({preview_zoom});", src: "{cache_busted_preview_url(&detail.preview_url.clone().unwrap_or_default(), preview_media_revision())}", alt: "Preview of {detail.filename}", onerror: move |_| preview_error.set("This image cannot be decoded by the embedded browser. Its details and navigation remain available.".into()) } }
                                             } else { div { class: "preview-failure", role: "alert", p { "{detail.message}" } button { class: "secondary-button", r#type: "button", onclick: move |_| { if let Some(index) = preview_index() { load_preview(index); } }, "Retry" } } }
                                         }
                                         }
@@ -2216,8 +2255,8 @@ pub fn App() -> Element {
                     if let Some(mutation) = preview_mutation_confirmation() {
                         div { class: "comparison-overlay preview-confirmation-overlay",
                             div { class: "comparison-dialog preview-confirmation-dialog", role: "alertdialog", "aria-modal": "true", "aria-label": "Confirm managed media change",
-                                h2 { match &mutation { PreviewMutation::Rotate { .. } => "Overwrite managed copy?", PreviewMutation::Delete { .. } => "Move managed copy to Trash?" } }
-                                p { match &mutation { PreviewMutation::Rotate { .. } => "This rotates and overwrites only the managed library copy. Your original import-source file is not changed.".to_owned(), PreviewMutation::Delete { filename, .. } => format!("{filename} will be moved to your operating system Trash. Only the managed library copy is affected; the original import source remains intact.") } }
+                                h2 { "Move managed copy to Trash?" }
+                                p { match &mutation { PreviewMutation::Delete { filename, .. } => format!("{filename} will be moved to your operating system Trash. Only the managed library copy is affected; the original import source remains intact.") } }
                                 div { class: "comparison-actions",
                                     button { class: "secondary-button", r#type: "button", disabled: preview_mutation_busy(), onclick: move |_| preview_mutation_confirmation.set(None), "Cancel" }
                                     button { class: "primary-button preview-destructive-confirm", r#type: "button", disabled: preview_mutation_busy(), onclick: move |_| confirm_preview_mutation(), if preview_mutation_busy() { "Working…" } else { "Confirm" } }
@@ -2289,6 +2328,14 @@ pub fn App() -> Element {
 #[cfg(test)]
 mod review_layout_tests {
     const STYLES: &str = include_str!("../assets/styles.css");
+
+    #[test]
+    fn rotated_preview_uses_a_new_cache_key() {
+        assert_eq!(
+            super::cache_busted_preview_url("asset://localhost/managed-image", 7),
+            "asset://localhost/managed-image?preview_revision=7"
+        );
+    }
 
     #[test]
     fn review_uses_the_full_window_and_keeps_preview_aspect_ratio() {

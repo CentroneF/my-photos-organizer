@@ -1,7 +1,7 @@
 # Requirments
 1. From the list view, remove the file name and other information
 2. When the user clicks on the media, a full window preview should open.
-3. On the top of the preview, there should be a tool bar with: rotate right and left, magnify + and -, fit to window, actual size (100%), and delete. On rotate, the user should be asked to confirm overwriting the image. On delete a confirmation dialog should be shown to the user.
+3. On the top of the preview, there should be a tool bar with: rotate right and left, magnify + and -, fit to window, actual size (100%), and delete. Rotation immediately overwrites only the managed image. On delete a confirmation dialog should be shown to the user.
 4. On the right, there should be an informations bar, which will show all picture information.
 5. Using the keyboard arrows (right and left) I should be able to move to prvious/next media in the searched media list.
 6. Pressing `Esc` should close the preview.
