@@ -3,6 +3,8 @@ mod library;
 mod review;
 mod search;
 
+use tauri_plugin_clipboard_manager::ClipboardExt;
+
 #[tauri::command]
 fn start_review(
     request: import_source::SaveImportSourceRequest,
@@ -60,6 +62,65 @@ fn search_library(
     request: search::SearchLibraryRequest,
 ) -> Result<search::SearchLibraryResult, search::SearchError> {
     search::search_library(app, request)
+}
+
+#[tauri::command]
+fn media_details(
+    app: tauri::AppHandle,
+    request: search::MediaDetailsRequest,
+) -> Result<search::MediaDetails, search::SearchError> {
+    search::media_details(app, request)
+}
+
+#[tauri::command]
+fn update_media_tags(
+    request: search::UpdateMediaTagsRequest,
+) -> Result<search::UpdateMediaTagsResult, search::SearchError> {
+    search::update_media_tags(request)
+}
+
+#[tauri::command]
+fn copy_managed_media_path(
+    app: tauri::AppHandle,
+    request: search::ManagedMediaActionRequest,
+) -> Result<(), search::SearchError> {
+    let path = search::managed_media_path(request)?;
+    app.clipboard()
+        .write_text(path.display().to_string())
+        .map_err(|error| search::SearchError {
+            code: "clipboard_unavailable",
+            message: format!("Could not copy the managed media path: {error}"),
+        })
+}
+
+#[tauri::command]
+fn reveal_managed_media_folder(
+    request: search::ManagedMediaActionRequest,
+) -> Result<(), search::SearchError> {
+    let path = search::managed_media_path(request)?;
+    let parent = path.parent().ok_or_else(|| search::SearchError {
+        code: "media_unavailable",
+        message: "The managed media folder is unavailable.".into(),
+    })?;
+    tauri_plugin_opener::open_path(parent, None::<&str>).map_err(|error| search::SearchError {
+        code: "folder_open_failed",
+        message: format!("Could not open the managed media folder: {error}"),
+    })
+}
+
+#[tauri::command]
+fn rotate_managed_media(
+    app: tauri::AppHandle,
+    request: search::RotateManagedMediaRequest,
+) -> Result<search::MediaDetails, search::SearchError> {
+    search::rotate_managed_media(app, request)
+}
+
+#[tauri::command]
+fn delete_managed_media(
+    request: search::DeleteManagedMediaRequest,
+) -> Result<search::DeleteManagedMediaResult, search::SearchError> {
+    search::delete_managed_media(request)
 }
 
 #[tauri::command]
@@ -256,6 +317,7 @@ fn reset_library_password(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_persisted_scope::init())
@@ -272,6 +334,12 @@ pub fn run() {
             import_review_item,
             substitute_review_item,
             search_library,
+            media_details,
+            update_media_tags,
+            copy_managed_media_path,
+            reveal_managed_media_folder,
+            rotate_managed_media,
+            delete_managed_media,
             list_library_tags,
             recent_library_tags,
             lock_library,

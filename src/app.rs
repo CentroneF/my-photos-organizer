@@ -38,10 +38,18 @@ export function warm_video_preview(video) {
     });
   });
 }
+
+export function focus_media_preview() {
+  requestAnimationFrame(() => {
+    document.querySelector("[data-media-preview-dialog]")?.focus();
+  });
+}
 "#)]
 extern "C" {
     #[wasm_bindgen(catch)]
     fn warm_video_preview(video: &web_sys::HtmlVideoElement) -> Result<js_sys::Promise, JsValue>;
+
+    fn focus_media_preview();
 }
 
 #[derive(Serialize)]
@@ -302,6 +310,7 @@ struct SearchLibraryResult {
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SearchLibraryItem {
+    candidate_id: i64,
     filename: String,
     media_type: String,
     effective_import_date: Option<String>,
@@ -309,6 +318,82 @@ struct SearchLibraryItem {
     tags: Vec<String>,
     preview_url: Option<String>,
     preview_state: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaDetailsRequest {
+    candidate_id: i64,
+}
+
+#[derive(Serialize)]
+struct MediaDetailsInvokeArgs {
+    request: MediaDetailsRequest,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaDetails {
+    state: String,
+    candidate_id: i64,
+    filename: String,
+    media_type: String,
+    tags: Vec<String>,
+    preview_url: Option<String>,
+    preview_state: String,
+    rotation_supported: bool,
+    metadata: ReviewMetadata,
+    message: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateMediaTagsRequest {
+    candidate_id: i64,
+    tags: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedMediaActionRequest {
+    candidate_id: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RotateManagedMediaRequest {
+    candidate_id: i64,
+    direction: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteManagedMediaRequest {
+    candidate_id: i64,
+    confirmed: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteManagedMediaResult {
+    candidate_id: i64,
+}
+
+#[derive(Clone)]
+enum PreviewMutation {
+    Delete { candidate_id: i64, filename: String },
+}
+
+#[derive(Serialize)]
+struct PreviewInvokeArgs<T> {
+    request: T,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateMediaTagsResult {
+    candidate_id: i64,
+    tags: Vec<String>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -381,12 +466,25 @@ fn metadata_gps(value: Option<GpsCoordinates>) -> String {
         .unwrap_or_else(|| "Not available".into())
 }
 
+fn normalize_tag(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
 fn video_target(event: &MediaEvent) -> Option<web_sys::HtmlVideoElement> {
     event
         .data()
         .downcast::<web_sys::Event>()
         .and_then(|event| event.target())
         .and_then(|target| target.dyn_into::<web_sys::HtmlVideoElement>().ok())
+}
+
+fn cache_busted_preview_url(url: &str, revision: u64) -> String {
+    let separator = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{separator}preview_revision={revision}")
 }
 
 #[component]
@@ -503,6 +601,24 @@ pub fn App() -> Element {
     let mut search_dates_expanded = use_signal(|| true);
     let mut search_media_expanded = use_signal(|| true);
     let mut search_tags_expanded = use_signal(|| true);
+    let mut preview_index = use_signal(|| None::<usize>);
+    let mut preview_detail = use_signal(|| None::<MediaDetails>);
+    let mut preview_loading = use_signal(|| false);
+    let mut preview_error = use_signal(String::new);
+    let mut preview_zoom = use_signal(|| 1_f32);
+    let mut preview_fit = use_signal(|| true);
+    let mut preview_media_revision = use_signal(|| 0_u64);
+    let mut preview_info_collapsed = use_signal(|| false);
+    let mut preview_tag_draft = use_signal(String::new);
+    let mut preview_tag_options = use_signal(Vec::<String>::new);
+    let mut preview_tag_busy = use_signal(|| false);
+    let mut preview_copied = use_signal(|| false);
+    let mut preview_mutation_busy = use_signal(|| false);
+    let mut preview_mutation_confirmation = use_signal(|| None::<PreviewMutation>);
+    let mut search_refresh = use_signal(|| 0_u64);
+    let mut preview_tag_save_request = use_signal(|| None::<(i64, Vec<String>)>);
+    let mut preview_copy_request = use_signal(|| None::<i64>);
+    let mut preview_reveal_request = use_signal(|| None::<i64>);
 
     use_effect(move || {
         spawn(async move {
@@ -587,6 +703,7 @@ pub fn App() -> Element {
         let captured_end = search_captured_end_date();
         let media_types = search_media_types();
         let tags = search_selected_tags();
+        let _refresh = search_refresh();
         spawn(async move {
             search_loading.set(true);
             let request = SearchLibraryInvokeArgs {
@@ -605,7 +722,24 @@ pub fn App() -> Element {
                 Ok(args) => match invoke("search_library", args).await {
                     Ok(value) => {
                         match serde_wasm_bindgen::from_value::<SearchLibraryResult>(value) {
-                            Ok(result) => search_items.set(result.items),
+                            Ok(result) => {
+                                let selected_id = preview_index().and_then(|index| {
+                                    search_items().get(index).map(|item| item.candidate_id)
+                                });
+                                let selected_remains = selected_id.is_none_or(|candidate_id| {
+                                    result
+                                        .items
+                                        .iter()
+                                        .any(|item| item.candidate_id == candidate_id)
+                                });
+                                search_items.set(result.items);
+                                if !selected_remains {
+                                    preview_index.set(None);
+                                    preview_detail.set(None);
+                                    preview_error.set(String::new());
+                                    preview_loading.set(false);
+                                }
+                            }
                             Err(_) => error
                                 .set("The library search returned an unexpected response.".into()),
                         }
@@ -645,6 +779,38 @@ pub fn App() -> Element {
                     Err(value) => error.set(command_error(value, "Could not load library tags.")),
                 },
                 Err(_) => error.set("Could not prepare the tag list.".into()),
+            }
+        });
+    });
+
+    use_effect(move || {
+        if preview_index().is_none() {
+            preview_tag_options.set(Vec::new());
+            return;
+        }
+        let query = preview_tag_draft();
+        spawn(async move {
+            let request = ListLibraryTagsInvokeArgs {
+                request: ListLibraryTagsRequest {
+                    query: (!query.trim().is_empty()).then_some(query.as_str()),
+                },
+            };
+            match serde_wasm_bindgen::to_value(&request) {
+                Ok(args) => match invoke("list_library_tags", args).await {
+                    Ok(value) => {
+                        match serde_wasm_bindgen::from_value::<ListLibraryTagsResult>(value) {
+                            Ok(result) => preview_tag_options.set(result.tags),
+                            Err(_) => preview_error.set(
+                                "The preview tag list returned an unexpected response.".into(),
+                            ),
+                        }
+                    }
+                    Err(value) => preview_error.set(command_error(
+                        value,
+                        "Could not load preview tag suggestions.",
+                    )),
+                },
+                Err(_) => preview_error.set("Could not prepare preview tag suggestions.".into()),
             }
         });
     });
@@ -1230,6 +1396,284 @@ pub fn App() -> Element {
         }
     };
 
+    let mut load_preview = move |index: usize| {
+        let Some(item) = search_items().get(index).cloned() else {
+            return;
+        };
+        preview_index.set(Some(index));
+        preview_detail.set(None);
+        preview_error.set(String::new());
+        preview_loading.set(true);
+        preview_zoom.set(1.0);
+        preview_fit.set(true);
+        preview_info_collapsed.set(false);
+        preview_tag_draft.set(String::new());
+        preview_copied.set(false);
+        spawn(async move {
+            let request = MediaDetailsInvokeArgs {
+                request: MediaDetailsRequest {
+                    candidate_id: item.candidate_id,
+                },
+            };
+            match serde_wasm_bindgen::to_value(&request) {
+                Ok(args) => match invoke("media_details", args).await {
+                    Ok(value) => match serde_wasm_bindgen::from_value::<MediaDetails>(value) {
+                        Ok(detail) => preview_detail.set(Some(detail)),
+                        Err(_) => preview_error
+                            .set("The media details returned an unexpected response.".into()),
+                    },
+                    Err(value) => preview_error.set(command_error(
+                        value,
+                        "Could not load this managed media item.",
+                    )),
+                },
+                Err(_) => preview_error.set("Could not prepare this media preview.".into()),
+            }
+            preview_loading.set(false);
+        });
+    };
+    let mut close_preview = move || {
+        preview_index.set(None);
+        preview_detail.set(None);
+        preview_error.set(String::new());
+        preview_loading.set(false);
+        preview_tag_draft.set(String::new());
+        preview_copied.set(false);
+    };
+    let mut previous_preview = move || {
+        if let Some(index) = preview_index() {
+            if index > 0 {
+                load_preview(index - 1);
+            }
+        }
+    };
+    let mut next_preview = move || {
+        if let Some(index) = preview_index() {
+            if index + 1 < search_items().len() {
+                load_preview(index + 1);
+            }
+        }
+    };
+
+    use_effect(move || {
+        let Some((candidate_id, tags)) = preview_tag_save_request() else {
+            return;
+        };
+        preview_tag_save_request.set(None);
+        preview_error.set(String::new());
+        preview_tag_busy.set(true);
+        spawn(async move {
+            let request = PreviewInvokeArgs {
+                request: UpdateMediaTagsRequest { candidate_id, tags },
+            };
+            match serde_wasm_bindgen::to_value(&request) {
+                Ok(args) => match invoke("update_media_tags", args).await {
+                    Ok(value) => {
+                        match serde_wasm_bindgen::from_value::<UpdateMediaTagsResult>(value) {
+                            Ok(result) => {
+                                preview_detail.with_mut(|detail| {
+                                    if let Some(detail) = detail
+                                        .as_mut()
+                                        .filter(|detail| detail.candidate_id == result.candidate_id)
+                                    {
+                                        detail.tags = result.tags.clone();
+                                    }
+                                });
+                                search_items.with_mut(|items| {
+                                    if let Some(item) = items
+                                        .iter_mut()
+                                        .find(|item| item.candidate_id == result.candidate_id)
+                                    {
+                                        item.tags = result.tags.clone();
+                                    }
+                                });
+                                preview_tag_draft.set(String::new());
+                                search_refresh.with_mut(|revision| *revision += 1);
+                            }
+                            Err(_) => preview_error
+                                .set("The saved tags returned an unexpected response.".into()),
+                        }
+                    }
+                    Err(value) => preview_error.set(command_error(
+                        value,
+                        "Could not save the managed media tags.",
+                    )),
+                },
+                Err(_) => preview_error.set("Could not prepare the tag update.".into()),
+            }
+            preview_tag_busy.set(false);
+        });
+    });
+
+    use_effect(move || {
+        let Some(candidate_id) = preview_copy_request() else {
+            return;
+        };
+        preview_copy_request.set(None);
+        preview_error.set(String::new());
+        preview_copied.set(false);
+        spawn(async move {
+            let request = PreviewInvokeArgs {
+                request: ManagedMediaActionRequest { candidate_id },
+            };
+            match serde_wasm_bindgen::to_value(&request) {
+                Ok(args) => match invoke("copy_managed_media_path", args).await {
+                    Ok(_) => preview_copied.set(true),
+                    Err(value) => preview_error.set(command_error(
+                        value,
+                        "Could not copy the managed media path.",
+                    )),
+                },
+                Err(_) => preview_error.set("Could not prepare the managed path copy.".into()),
+            }
+        });
+    });
+
+    use_effect(move || {
+        let Some(candidate_id) = preview_reveal_request() else {
+            return;
+        };
+        preview_reveal_request.set(None);
+        preview_error.set(String::new());
+        spawn(async move {
+            let request = PreviewInvokeArgs {
+                request: ManagedMediaActionRequest { candidate_id },
+            };
+            match serde_wasm_bindgen::to_value(&request) {
+                Ok(args) => match invoke("reveal_managed_media_folder", args).await {
+                    Ok(_) => (),
+                    Err(value) => preview_error.set(command_error(
+                        value,
+                        "Could not open the managed media folder.",
+                    )),
+                },
+                Err(_) => preview_error.set("Could not prepare the managed-folder reveal.".into()),
+            }
+        });
+    });
+
+    let mut rotate_preview = move |candidate_id: i64, direction: &'static str| {
+        preview_mutation_busy.set(true);
+        preview_error.set(String::new());
+        spawn(async move {
+            let request = PreviewInvokeArgs {
+                request: RotateManagedMediaRequest {
+                    candidate_id,
+                    direction: direction.into(),
+                },
+            };
+            match serde_wasm_bindgen::to_value(&request) {
+                Ok(args) => match invoke("rotate_managed_media", args).await {
+                    Ok(value) => match serde_wasm_bindgen::from_value::<MediaDetails>(value) {
+                        Ok(detail) => {
+                            let refreshed_preview_url = detail.preview_url.clone();
+                            let refreshed_preview_state = detail.preview_state.clone();
+                            search_items.with_mut(|items| {
+                                if let Some(item) = items
+                                    .iter_mut()
+                                    .find(|item| item.candidate_id == detail.candidate_id)
+                                {
+                                    item.preview_url = refreshed_preview_url;
+                                    item.preview_state = refreshed_preview_state;
+                                }
+                            });
+                            preview_detail.set(Some(detail));
+                            preview_media_revision.with_mut(|revision| *revision += 1);
+                            preview_zoom.set(1.0);
+                            preview_fit.set(true);
+                        }
+                        Err(_) => preview_error
+                            .set("The rotated media returned an unexpected response.".into()),
+                    },
+                    Err(value) => preview_error
+                        .set(command_error(value, "Could not rotate the managed copy.")),
+                },
+                Err(_) => preview_error.set("Could not prepare the managed-copy rotation.".into()),
+            }
+            preview_mutation_busy.set(false);
+        });
+    };
+
+    let mut confirm_preview_mutation = move || {
+        let Some(mutation) = preview_mutation_confirmation() else {
+            return;
+        };
+        preview_mutation_confirmation.set(None);
+        preview_mutation_busy.set(true);
+        preview_error.set(String::new());
+        spawn(async move {
+            let PreviewMutation::Delete { candidate_id, .. } = mutation;
+            let request = PreviewInvokeArgs {
+                request: DeleteManagedMediaRequest {
+                    candidate_id,
+                    confirmed: true,
+                },
+            };
+            match serde_wasm_bindgen::to_value(&request) {
+                Ok(args) => match invoke("delete_managed_media", args).await {
+                    Ok(value) => {
+                        match serde_wasm_bindgen::from_value::<DeleteManagedMediaResult>(value) {
+                            Ok(result) if result.candidate_id == candidate_id => {
+                                let next = search_items.with_mut(|items| {
+                                    let Some(deleted_index) = items
+                                        .iter()
+                                        .position(|item| item.candidate_id == candidate_id)
+                                    else {
+                                        return None;
+                                    };
+                                    items.remove(deleted_index);
+                                    (!items.is_empty()).then(|| {
+                                        (
+                                            deleted_index.min(items.len() - 1),
+                                            items[deleted_index.min(items.len() - 1)].clone(),
+                                        )
+                                    })
+                                });
+                                search_refresh.with_mut(|revision| *revision += 1);
+                                if let Some((index, item)) = next {
+                                    preview_index.set(Some(index));
+                                    focus_media_preview();
+                                    preview_detail.set(None);
+                                    preview_loading.set(true);
+                                    let details_request = MediaDetailsInvokeArgs {
+                                        request: MediaDetailsRequest {
+                                            candidate_id: item.candidate_id,
+                                        },
+                                    };
+                                    match serde_wasm_bindgen::to_value(&details_request) {
+                                            Ok(args) => match invoke("media_details", args).await {
+                                                Ok(value) => match serde_wasm_bindgen::from_value::<MediaDetails>(value) {
+                                                    Ok(detail) => preview_detail.set(Some(detail)),
+                                                    Err(_) => preview_error.set("The next media details returned an unexpected response.".into()),
+                                                },
+                                                Err(value) => preview_error.set(command_error(value, "Could not load the next managed media item.")),
+                                            },
+                                            Err(_) => preview_error.set("Could not prepare the next media preview.".into()),
+                                        }
+                                    preview_loading.set(false);
+                                } else {
+                                    preview_index.set(None);
+                                    preview_detail.set(None);
+                                }
+                            }
+                            Ok(_) => preview_error.set(
+                                "The deletion response did not match the selected media.".into(),
+                            ),
+                            Err(_) => preview_error
+                                .set("The deletion returned an unexpected response.".into()),
+                        }
+                    }
+                    Err(value) => preview_error.set(command_error(
+                        value,
+                        "Could not move the managed copy to Trash.",
+                    )),
+                },
+                Err(_) => preview_error.set("Could not prepare the managed-copy deletion.".into()),
+            }
+            preview_mutation_busy.set(false);
+        });
+    };
+
     let is_onboarding = matches!(step().as_str(), "loading" | "folder" | "stale");
     let shell_class = if is_onboarding {
         "app-shell"
@@ -1240,6 +1684,10 @@ pub fn App() -> Element {
         .date_origin
         .clone()
         .unwrap_or_else(|| "unavailable".into());
+    let active_preview = preview_index().and_then(|index| search_items().get(index).cloned());
+    let preview_position = preview_index()
+        .map(|index| format!("{} of {}", index + 1, search_items().len()))
+        .unwrap_or_default();
     let flow_panel_class = if step() == "review" {
         "flow-panel review-flow-panel"
     } else if step() == "home" {
@@ -1256,6 +1704,7 @@ pub fn App() -> Element {
     };
 
     rsx! {
+        link { rel: "stylesheet", href: "/assets/fontawesome/css/all.min.css" }
         link { rel: "stylesheet", href: CSS }
         main { class: "{shell_class}",
             if is_onboarding {
@@ -1399,7 +1848,7 @@ pub fn App() -> Element {
                                     if !search_captured_start_date().is_empty() || !search_captured_end_date().is_empty() { p { class: "privacy-note", "Captured dates are available only for imports made after this feature was added. Earlier imports remain searchable by imported date." } }
                                     if search_loading() { p { class: "privacy-note", "Loading imported media…" } }
                                     if !search_loading() && search_items().is_empty() { div { class: "library-empty", "data-testid": "library-empty-state", if search_media_types().is_empty() { h3 { "No media types selected." } p { "Select Images or Videos to show matching imported media." } } else if !search_imported_start_date().is_empty() || !search_imported_end_date().is_empty() || !search_captured_start_date().is_empty() || !search_captured_end_date().is_empty() || search_media_types().len() != 2 || !search_selected_tags().is_empty() { h3 { "No media matches these filters." } p { "Adjust or clear filters to see other managed media." } } else { h3 { "No media has been imported yet." } p { "Use Import media to safely review a folder and create managed copies. Originals are never moved or deleted." } button { class: "primary-button", r#type: "button", onclick: move |_| step.set("import".into()), "Import media" } } } }
-                                    if !search_loading() && !search_items().is_empty() { div { class: "media-grid", "data-testid": "library-search-grid", for item in search_items() { article { class: "media-card", div { class: "media-card-preview", if item.preview_state == "available" && item.preview_url.is_some() { if item.media_type == "video" { VideoCardPreview { key: "{item.preview_url.clone().unwrap_or_default()}", preview_url: item.preview_url.clone().unwrap_or_default() } } else { img { src: "{item.preview_url.clone().unwrap_or_default()}", alt: "Preview of {item.filename}" } } } else { p { class: "preview-fallback", "Preview unavailable" } } } div { class: "media-card-details", strong { "{item.filename}" } small { "{item.media_type}" } small { "Selected: " {item.effective_import_date.clone().unwrap_or_else(|| "unavailable".into())} } small { "Original: " {item.original_media_date.clone().unwrap_or_else(|| "not recorded".into())} } if !item.tags.is_empty() { small { "Tags: " {item.tags.join(", ")} } } } } } } }
+                                    if !search_loading() && !search_items().is_empty() { div { class: "media-grid", "data-testid": "library-search-grid", for (index, item) in search_items().into_iter().enumerate() { button { class: "media-card", r#type: "button", "aria-label": "Open preview for {item.filename}", onclick: move |_| load_preview(index), div { class: "media-card-preview", if item.preview_state == "available" && item.preview_url.is_some() { if item.media_type == "video" { VideoCardPreview { key: "{item.preview_url.clone().unwrap_or_default()}", preview_url: item.preview_url.clone().unwrap_or_default() } } else { img { src: "{item.preview_url.clone().unwrap_or_default()}", alt: "Preview of {item.filename}" } } } else { p { class: "preview-fallback", "Preview unavailable" } } } } } } }
                                 }
                                 aside { class: "filter-sidebar", "aria-label": "Library filters",
                                     section { class: "filter-section",
@@ -1671,6 +2120,150 @@ pub fn App() -> Element {
                         }
                     }
 
+                    if let Some(selected) = active_preview {
+                        div { class: "media-preview-overlay",
+                            div {
+                                class: "media-preview-dialog",
+                                key: "{selected.candidate_id}",
+                                "data-media-preview-dialog": "true",
+                                role: "dialog",
+                                "aria-modal": "true",
+                                "aria-label": "Preview of {selected.filename}",
+                                tabindex: "0",
+                                onmounted: move |event| async move {
+                                    let _ = event.data().set_focus(true).await;
+                                },
+                                onkeydown: move |event| {
+                                    if event.key() == Key::Escape { close_preview(); }
+                                    else if event.key() == Key::ArrowLeft { previous_preview(); }
+                                    else if event.key() == Key::ArrowRight { next_preview(); }
+                                },
+                                div { class: if preview_info_collapsed() { "media-preview-content media-preview-content-info-hidden" } else { "media-preview-content" },
+                                    section { class: "media-preview-stage",
+                                        header { class: "media-preview-toolbar",
+                                            div { class: "media-preview-navigation",
+                                                button { class: "secondary-button", r#type: "button", onclick: move |_| previous_preview(), disabled: preview_index() == Some(0), "aria-label": "Previous media", title: "Previous media",
+                                                    i { class: "fa-solid fa-chevron-left", "aria-hidden": "true" }
+                                                }
+                                                strong { class: "media-preview-position", "{preview_position}" }
+                                                button { class: "secondary-button", r#type: "button", onclick: move |_| next_preview(), disabled: preview_index().is_none_or(|index| index + 1 >= search_items().len()), "aria-label": "Next media", title: "Next media",
+                                                    i { class: "fa-solid fa-chevron-right", "aria-hidden": "true" }
+                                                }
+                                            }
+                                            if selected.media_type == "image" {
+                                                div { class: "media-preview-zoom",
+                                                    button { class: "secondary-button", r#type: "button", onclick: move |_| { preview_fit.set(false); preview_zoom.set((preview_zoom() - 0.25).max(0.25)); }, "aria-label": "Zoom out", title: "Zoom out",
+                                                        i { class: "fa-solid fa-magnifying-glass-minus", "aria-hidden": "true" }
+                                                    }
+                                                    button { class: "secondary-button", r#type: "button", onclick: move |_| { preview_fit.set(true); preview_zoom.set(1.0); }, "aria-label": "Fit image to window", title: "Fit image to window",
+                                                        i { class: "fa-solid fa-compress", "aria-hidden": "true" }
+                                                    }
+                                                    button { class: "secondary-button", r#type: "button", onclick: move |_| { preview_fit.set(false); preview_zoom.set(1.0); }, "aria-label": "Show image at actual size", title: "Show image at actual size",
+                                                        i { class: "fa-solid fa-expand", "aria-hidden": "true" }
+                                                    }
+                                                    button { class: "secondary-button", r#type: "button", onclick: move |_| { preview_fit.set(false); preview_zoom.set((preview_zoom() + 0.25).min(4.0)); }, "aria-label": "Zoom in", title: "Zoom in",
+                                                        i { class: "fa-solid fa-magnifying-glass-plus", "aria-hidden": "true" }
+                                                    }
+                                                }
+                                            }
+                                            if let Some(detail) = preview_detail().filter(|detail| detail.rotation_supported) {
+                                                button { class: "secondary-button", r#type: "button", disabled: preview_mutation_busy(), onclick: move |_| rotate_preview(detail.candidate_id, "left"), "aria-label": "Rotate managed image left", title: "Rotate managed image left",
+                                                    i { class: "fa-solid fa-rotate-left", "aria-hidden": "true" }
+                                                }
+                                                button { class: "secondary-button", r#type: "button", disabled: preview_mutation_busy(), onclick: move |_| rotate_preview(detail.candidate_id, "right"), "aria-label": "Rotate managed image right", title: "Rotate managed image right",
+                                                    i { class: "fa-solid fa-rotate-right", "aria-hidden": "true" }
+                                                }
+                                            }
+                                            div { class: "media-preview-actions",
+                                                if let Some(detail) = preview_detail() {
+                                                    button { class: "secondary-button preview-delete-button", r#type: "button", disabled: preview_mutation_busy(), "aria-label": "Move managed copy to Trash", title: "Move managed copy to Trash", onclick: move |_| preview_mutation_confirmation.set(Some(PreviewMutation::Delete { candidate_id: detail.candidate_id, filename: detail.filename.clone() })),
+                                                        i { class: "fa-solid fa-trash-can", "aria-hidden": "true" }
+                                                    }
+                                                }
+                                                button { class: "secondary-button media-preview-close", r#type: "button", "aria-label": "Close preview", title: "Close preview", onclick: move |_| close_preview(),
+                                                    i { class: "fa-solid fa-xmark", "aria-hidden": "true" }
+                                                }
+                                            }
+                                            button { class: "secondary-button", r#type: "button", "aria-expanded": "{!preview_info_collapsed()}", "aria-label": if preview_info_collapsed() { "Show media information" } else { "Hide media information" }, title: if preview_info_collapsed() { "Show media information" } else { "Hide media information" }, onclick: move |_| preview_info_collapsed.set(!preview_info_collapsed()),
+                                                i { class: "fa-solid fa-circle-info", "aria-hidden": "true" }
+                                            }
+                                        }
+                                        div { class: "media-preview-canvas",
+                                        if preview_loading() { p { class: "preview-fallback", "Loading managed media…" } }
+                                        if preview_mutation_busy() { p { class: "preview-mutation-status", role: "status", "Updating managed media…" } }
+                                        if !preview_loading() && !preview_error().is_empty() {
+                                            div { class: "preview-failure", role: "alert", p { "{preview_error}" } button { class: "secondary-button", r#type: "button", onclick: move |_| { if let Some(index) = preview_index() { load_preview(index); } }, "Retry" } }
+                                        }
+                                        if let Some(detail) = preview_detail() {
+                                            if detail.preview_state == "available" && detail.preview_url.is_some() {
+                                                if detail.media_type == "video" { video { class: "media-preview media-preview-video", controls: true, preload: "metadata", src: "{detail.preview_url.clone().unwrap_or_default()}", onerror: move |_| preview_error.set("This video cannot be decoded by the embedded browser. Its details and navigation remain available.".into()) } }
+                                                else { img { class: if preview_fit() { "media-preview media-preview-fit" } else { "media-preview media-preview-actual" }, style: "transform: scale({preview_zoom});", src: "{cache_busted_preview_url(&detail.preview_url.clone().unwrap_or_default(), preview_media_revision())}", alt: "Preview of {detail.filename}", onerror: move |_| preview_error.set("This image cannot be decoded by the embedded browser. Its details and navigation remain available.".into()) } }
+                                            } else { div { class: "preview-failure", role: "alert", p { "{detail.message}" } button { class: "secondary-button", r#type: "button", onclick: move |_| { if let Some(index) = preview_index() { load_preview(index); } }, "Retry" } } }
+                                        }
+                                        }
+                                    }
+                                    aside { class: if preview_info_collapsed() { "media-preview-info media-preview-info-collapsed" } else { "media-preview-info" }, "aria-label": "Media information",
+                                        if let Some(detail) = preview_detail() {
+                                            div { class: "media-preview-info-header",
+                                                div { h2 { "{detail.filename}" } p { class: "privacy-note", "{detail.media_type}" } }
+                                            }
+                                            if !preview_info_collapsed() {
+                                                div { class: "review-metadata",
+                                                    strong { "Media details" }
+                                                    dl {
+                                                        div { dt { "Size" } dd { "{metadata_size(detail.metadata.file_size_bytes)}" } }
+                                                        div { dt { "Dimensions" } dd { "{metadata_dimensions(detail.metadata.width, detail.metadata.height)}" } }
+                                                        div { dt { "Created" } dd { "{metadata_value(detail.metadata.created_at.clone())}" } }
+                                                        div { dt { "Modified" } dd { "{metadata_value(detail.metadata.modified_at.clone())}" } }
+                                                        div { dt { "Captured" } dd { "{metadata_value(detail.metadata.captured_at.clone())}" } }
+                                                        div { dt { "Camera" } dd { "{metadata_value(detail.metadata.camera.clone())}" } }
+                                                        div { dt { "Orientation" } dd { "{metadata_value(detail.metadata.orientation.clone())}" } }
+                                                        div { dt { "GPS location" } dd { "{metadata_gps(detail.metadata.gps.clone())}" } }
+                                                    }
+                                                }
+                                                div { class: "preview-tag-workspace",
+                                                    strong { "Tags" }
+                                                    div { class: "review-tag-editor",
+                                                        for tag in detail.tags.clone() {
+                                                            span { class: "review-tag-chip", "{tag}"
+                                                                button { r#type: "button", "aria-label": "Remove tag {tag}", disabled: preview_tag_busy(), onclick: move |_| { let mut tags = preview_detail().map(|detail| detail.tags).unwrap_or_default(); tags.retain(|selected| selected != &tag); preview_tag_save_request.set(Some((detail.candidate_id, tags))); }, "×" }
+                                                            }
+                                                        }
+                                                        input { value: "{preview_tag_draft}", placeholder: "Type a tag and press Space", disabled: preview_tag_busy(), oninput: move |event| { let value = event.value(); let commits = value.split_whitespace().collect::<Vec<_>>(); let ends_with_space = value.chars().last().is_some_and(char::is_whitespace); let draft = if ends_with_space { String::new() } else { commits.last().copied().unwrap_or_default().to_owned() }; let commit_count = commits.len().saturating_sub((!ends_with_space) as usize); if commit_count > 0 { let mut tags = preview_detail().map(|detail| detail.tags).unwrap_or_default(); for tag in commits.into_iter().take(commit_count) { let tag = normalize_tag(tag); if !tag.is_empty() && !tags.contains(&tag) { tags.push(tag); } } preview_tag_save_request.set(Some((detail.candidate_id, tags))); } preview_tag_draft.set(draft); }, onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); let tag = normalize_tag(&preview_tag_draft()); let mut tags = preview_detail().map(|detail| detail.tags).unwrap_or_default(); if !tag.is_empty() && !tags.contains(&tag) { tags.push(tag); preview_tag_save_request.set(Some((detail.candidate_id, tags))); } } } }
+                                                    }
+                                                    if !preview_tag_options().is_empty() {
+                                                        div { class: "preview-tag-suggestions", role: "listbox", "aria-label": "Suggested tags",
+                                                            for tag in preview_tag_options() {
+                                                                if !detail.tags.contains(&tag) {
+                                                                    button { class: "tag-suggestion", r#type: "button", disabled: preview_tag_busy(), onclick: move |_| { let mut tags = preview_detail().map(|detail| detail.tags).unwrap_or_default(); if !tags.contains(&tag) { tags.push(tag.clone()); preview_tag_save_request.set(Some((detail.candidate_id, tags))); } }, "{tag}" }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                div { class: "preview-path-actions",
+                                                    button { class: "secondary-button", r#type: "button", onclick: move |_| preview_copy_request.set(Some(detail.candidate_id)), if preview_copied() { "Copied" } else { "Copy path" } }
+                                                    button { class: "secondary-button", r#type: "button", onclick: move |_| preview_reveal_request.set(Some(detail.candidate_id)), if cfg!(target_os = "macos") { "Open in Finder" } else { "Open in Explorer" } }
+                                                }
+                                            }
+                                        } else { p { class: "privacy-note", "Media information will appear here when available." } }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(mutation) = preview_mutation_confirmation() {
+                        div { class: "comparison-overlay preview-confirmation-overlay",
+                            div { class: "comparison-dialog preview-confirmation-dialog", role: "alertdialog", "aria-modal": "true", "aria-label": "Confirm managed media change",
+                                h2 { "Move managed copy to Trash?" }
+                                p { match &mutation { PreviewMutation::Delete { filename, .. } => format!("{filename} will be moved to your operating system Trash. Only the managed library copy is affected; the original import source remains intact.") } }
+                                div { class: "comparison-actions",
+                                    button { class: "secondary-button", r#type: "button", disabled: preview_mutation_busy(), onclick: move |_| preview_mutation_confirmation.set(None), "Cancel" }
+                                    button { class: "primary-button preview-destructive-confirm", r#type: "button", disabled: preview_mutation_busy(), onclick: move |_| confirm_preview_mutation(), if preview_mutation_busy() { "Working…" } else { "Confirm" } }
+                                }
+                            }
+                        }
+                    }
                     if let Some(matched) = selected_similar_match() {
                         div { class: "comparison-overlay",
                             div {
@@ -1735,6 +2328,14 @@ pub fn App() -> Element {
 #[cfg(test)]
 mod review_layout_tests {
     const STYLES: &str = include_str!("../assets/styles.css");
+
+    #[test]
+    fn rotated_preview_uses_a_new_cache_key() {
+        assert_eq!(
+            super::cache_busted_preview_url("asset://localhost/managed-image", 7),
+            "asset://localhost/managed-image?preview_revision=7"
+        );
+    }
 
     #[test]
     fn review_uses_the_full_window_and_keeps_preview_aspect_ratio() {

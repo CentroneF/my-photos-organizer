@@ -1,4 +1,9 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    io::{BufWriter, Write},
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use chrono::NaiveDate;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -7,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
 use crate::library::{self, SetupLibraryError};
+use crate::review::ReviewMetadata;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,6 +78,75 @@ pub struct SearchLibraryItem {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MediaDetailsRequest {
+    pub candidate_id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateMediaTagsRequest {
+    pub candidate_id: i64,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedMediaActionRequest {
+    pub candidate_id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RotateManagedMediaRequest {
+    pub candidate_id: i64,
+    pub direction: RotationDirection,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum RotationDirection {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteManagedMediaRequest {
+    pub candidate_id: i64,
+    pub confirmed: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteManagedMediaResult {
+    pub candidate_id: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateMediaTagsResult {
+    pub candidate_id: i64,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaDetails {
+    pub state: &'static str,
+    pub candidate_id: i64,
+    pub filename: String,
+    pub media_type: String,
+    pub tags: Vec<String>,
+    pub preview_url: Option<String>,
+    pub preview_state: &'static str,
+    pub rotation_supported: bool,
+    pub metadata: ReviewMetadata,
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ListLibraryTagsRequest {
     #[serde(default)]
     pub query: Option<String>,
@@ -111,6 +186,383 @@ struct CatalogueItem {
     effective_import_date: Option<String>,
     original_media_date: Option<String>,
     tags: Vec<String>,
+}
+
+struct ResolvedImportedItem {
+    candidate_id: i64,
+    destination: std::path::PathBuf,
+    media_type: String,
+    tags: Vec<String>,
+}
+
+/// Resolves only current managed copies. Callers never receive or accept arbitrary paths.
+fn resolve_active_imported_item(
+    connection: &Connection,
+    root: &Path,
+    candidate_id: i64,
+) -> Result<ResolvedImportedItem, SearchError> {
+    let (destination_path, media_type): (String, String) = connection
+        .query_row(
+            "SELECT d.destination_path, c.media_type FROM item_decisions d JOIN review_candidates c ON c.id = d.candidate_id WHERE d.candidate_id = ?1 AND d.decision = 'imported' AND d.destination_path IS NOT NULL AND d.replaced_by_candidate_id IS NULL",
+            [candidate_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|value| match value {
+            rusqlite::Error::QueryReturnedNoRows => error(
+                "media_unavailable",
+                "This managed media item is no longer available in the active library.",
+            ),
+            other => database_error(other),
+        })?;
+    let destination = validate_managed_file(root, Path::new(&destination_path))?;
+    Ok(ResolvedImportedItem {
+        candidate_id,
+        destination,
+        media_type,
+        tags: tags_for_item(connection, candidate_id)?,
+    })
+}
+
+fn validate_managed_file(
+    root: &Path,
+    destination: &Path,
+) -> Result<std::path::PathBuf, SearchError> {
+    let root = root.canonicalize().map_err(|_| {
+        error(
+            "media_unavailable",
+            "The protected library is unavailable. Unlock it again and retry.",
+        )
+    })?;
+    let metadata = fs::symlink_metadata(destination).map_err(|_| {
+        error(
+            "media_unavailable",
+            "The managed media file is missing or cannot be read.",
+        )
+    })?;
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || fs::File::open(destination).is_err()
+    {
+        return Err(error(
+            "media_unavailable",
+            "The managed media file is missing or cannot be read.",
+        ));
+    }
+    let destination = destination.canonicalize().map_err(|_| {
+        error(
+            "media_unavailable",
+            "The managed media file is missing or cannot be read.",
+        )
+    })?;
+    if !destination.starts_with(&root) || destination.starts_with(root.join(".photo-handler")) {
+        return Err(error(
+            "media_unavailable",
+            "The selected file is outside the managed media library.",
+        ));
+    }
+    Ok(destination)
+}
+
+pub fn media_details(
+    app: tauri::AppHandle,
+    request: MediaDetailsRequest,
+) -> Result<MediaDetails, SearchError> {
+    let (item, root) = library::with_catalogue(|connection, root| {
+        resolve_active_imported_item(connection, root, request.candidate_id)
+            .map(|item| (item, root.to_path_buf()))
+    })?;
+    let (preview_url, preview_state) = safe_preview_url(&app, &root, &item.destination);
+    let preview_url = preview_url.map(|url| versioned_preview_url(url, &item.destination));
+    let available = preview_state == "available";
+    Ok(MediaDetails {
+        state: if available {
+            "available"
+        } else {
+            "unavailable"
+        },
+        candidate_id: item.candidate_id,
+        filename: item
+            .destination
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+        media_type: item.media_type,
+        tags: item.tags,
+        preview_url,
+        preview_state,
+        rotation_supported: supports_rotation(&item.destination),
+        metadata: crate::review::review_metadata(&item.destination),
+        message: if available {
+            "Managed media is ready for preview.".into()
+        } else {
+            "This managed media file is unavailable or cannot be previewed safely.".into()
+        },
+    })
+}
+
+fn versioned_preview_url(url: String, destination: &Path) -> String {
+    let revision = fs::metadata(destination)
+        .and_then(|metadata| metadata.modified())
+        .and_then(|modified| {
+            modified
+                .duration_since(UNIX_EPOCH)
+                .map_err(std::io::Error::other)
+        })
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("{url}?revision={revision}")
+}
+
+fn supports_rotation(destination: &Path) -> bool {
+    image::ImageReader::open(destination)
+        .ok()
+        .and_then(|reader| reader.with_guessed_format().ok())
+        .and_then(|reader| reader.format())
+        .is_some_and(|format| {
+            matches!(
+                format,
+                image::ImageFormat::Jpeg | image::ImageFormat::Png | image::ImageFormat::WebP
+            )
+        })
+}
+
+/// Replaces an imported item's tag set after proving that its managed copy is still safe.
+pub fn update_media_tags(
+    request: UpdateMediaTagsRequest,
+) -> Result<UpdateMediaTagsResult, SearchError> {
+    let tags = normalize_tags(&request.tags);
+    library::with_catalogue(|connection, root| {
+        resolve_active_imported_item(connection, root, request.candidate_id)?;
+        let transaction = connection.unchecked_transaction().map_err(database_error)?;
+        transaction
+            .execute(
+                "DELETE FROM candidate_tags WHERE candidate_id = ?1",
+                [request.candidate_id],
+            )
+            .map_err(database_error)?;
+        for tag in &tags {
+            transaction
+                .execute(
+                    "INSERT INTO tags (normalized_name) VALUES (?1) ON CONFLICT(normalized_name) DO NOTHING",
+                    [tag],
+                )
+                .map_err(database_error)?;
+            transaction
+                .execute(
+                    "INSERT INTO candidate_tags (candidate_id, tag_id) SELECT ?1, id FROM tags WHERE normalized_name = ?2",
+                    rusqlite::params![request.candidate_id, tag],
+                )
+                .map_err(database_error)?;
+        }
+        transaction.commit().map_err(database_error)?;
+        Ok(UpdateMediaTagsResult {
+            candidate_id: request.candidate_id,
+            tags,
+        })
+    })
+}
+
+/// Returns only a validated managed path for native-only copy and reveal commands.
+pub fn managed_media_path(
+    request: ManagedMediaActionRequest,
+) -> Result<std::path::PathBuf, SearchError> {
+    library::with_catalogue(|connection, root| {
+        resolve_active_imported_item(connection, root, request.candidate_id)
+            .map(|item| item.destination)
+    })
+}
+
+/// Rotates a validated managed image, overwriting only the managed copy.
+pub fn rotate_managed_media(
+    app: tauri::AppHandle,
+    request: RotateManagedMediaRequest,
+) -> Result<MediaDetails, SearchError> {
+    let item = library::with_catalogue(|connection, root| {
+        resolve_active_imported_item(connection, root, request.candidate_id)
+    })?;
+    if item.media_type != "image" {
+        return Err(error(
+            "rotation_unsupported",
+            "Only supported managed image files can be rotated.",
+        ));
+    }
+    rotate_image_file(&item.destination, request.direction)?;
+    media_details(
+        app,
+        MediaDetailsRequest {
+            candidate_id: item.candidate_id,
+        },
+    )
+}
+
+/// Moves a validated managed copy to Trash before hiding it from active search results.
+pub fn delete_managed_media(
+    request: DeleteManagedMediaRequest,
+) -> Result<DeleteManagedMediaResult, SearchError> {
+    if !request.confirmed {
+        return Err(error(
+            "confirmation_required",
+            "Confirm moving the managed copy to Trash before deleting it.",
+        ));
+    }
+    delete_managed_media_with_trash(request, |path| {
+        trash::delete(path).map_err(|value| value.to_string())
+    })
+}
+
+fn delete_managed_media_with_trash(
+    request: DeleteManagedMediaRequest,
+    move_to_trash: impl Fn(&Path) -> Result<(), String>,
+) -> Result<DeleteManagedMediaResult, SearchError> {
+    if !request.confirmed {
+        return Err(error(
+            "confirmation_required",
+            "Confirm moving the managed copy to Trash before deleting it.",
+        ));
+    }
+    library::with_catalogue(|connection, root| {
+        let item = resolve_active_imported_item(connection, root, request.candidate_id)?;
+        move_to_trash(&item.destination).map_err(|_| {
+            error(
+                "trash_failed",
+                "Could not move the managed copy to Trash. It remains in the library.",
+            )
+        })?;
+        connection.execute(
+            "UPDATE item_decisions SET destination_path = NULL WHERE candidate_id = ?1 AND decision = 'imported' AND destination_path IS NOT NULL AND replaced_by_candidate_id IS NULL",
+            [item.candidate_id],
+        ).map_err(database_error)?;
+        Ok(DeleteManagedMediaResult {
+            candidate_id: item.candidate_id,
+        })
+    })
+}
+
+fn rotate_image_file(destination: &Path, direction: RotationDirection) -> Result<(), SearchError> {
+    let reader = image::ImageReader::open(destination)
+        .map_err(|_| {
+            error(
+                "rotation_unsupported",
+                "This managed image cannot be decoded for rotation.",
+            )
+        })?
+        .with_guessed_format()
+        .map_err(|_| {
+            error(
+                "rotation_unsupported",
+                "This managed image format is unsupported for rotation.",
+            )
+        })?;
+    let format = reader.format().ok_or_else(|| {
+        error(
+            "rotation_unsupported",
+            "This managed image format is unsupported for rotation.",
+        )
+    })?;
+    if !matches!(
+        format,
+        image::ImageFormat::Jpeg | image::ImageFormat::Png | image::ImageFormat::WebP
+    ) {
+        return Err(error(
+            "rotation_unsupported",
+            "This managed image format is unsupported for rotation.",
+        ));
+    }
+    let image = reader.decode().map_err(|_| {
+        error(
+            "rotation_unsupported",
+            "This managed image cannot be decoded for rotation.",
+        )
+    })?;
+    let rotated = match direction {
+        RotationDirection::Left => image.rotate270(),
+        RotationDirection::Right => image.rotate90(),
+    };
+    let temporary = rotation_temporary_path(destination);
+    let output = fs::File::create(&temporary).map_err(|_| {
+        error(
+            "rotation_failed",
+            "Could not prepare a safe replacement for the managed copy.",
+        )
+    })?;
+    let mut writer = BufWriter::new(output);
+    if rotated.write_to(&mut writer, format).is_err() || writer.flush().is_err() {
+        let _ = fs::remove_file(&temporary);
+        return Err(error(
+            "rotation_failed",
+            "Could not write the rotated managed copy; the original was preserved.",
+        ));
+    }
+    let output = writer.into_inner().map_err(|_| {
+        let _ = fs::remove_file(&temporary);
+        error(
+            "rotation_failed",
+            "Could not finish the rotated managed copy; the original was preserved.",
+        )
+    })?;
+    if output.sync_all().is_err() {
+        let _ = fs::remove_file(&temporary);
+        return Err(error(
+            "rotation_failed",
+            "Could not safely finish the rotated managed copy; the original was preserved.",
+        ));
+    }
+    replace_with_rotated_file(&temporary, destination)
+}
+
+fn rotation_temporary_path(destination: &Path) -> PathBuf {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let extension = destination
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("tmp");
+    destination.with_file_name(format!(
+        ".photo-handler-rotate-{}-{}.{}",
+        std::process::id(),
+        stamp,
+        extension
+    ))
+}
+
+fn replace_with_rotated_file(temporary: &Path, destination: &Path) -> Result<(), SearchError> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        fs::rename(temporary, destination).map_err(|_| {
+            let _ = fs::remove_file(temporary);
+            error(
+                "rotation_failed",
+                "Could not replace the managed copy; the original was preserved.",
+            )
+        })
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let backup = destination.with_extension("photo-handler-rotate-backup");
+        fs::rename(destination, &backup).map_err(|_| {
+            error(
+                "rotation_failed",
+                "Could not prepare the managed copy for replacement.",
+            )
+        })?;
+        if fs::rename(temporary, destination).is_err() {
+            let _ = fs::rename(&backup, destination);
+            let _ = fs::remove_file(temporary);
+            return Err(error(
+                "rotation_failed",
+                "Could not replace the managed copy; the original was preserved.",
+            ));
+        }
+        fs::remove_file(backup).map_err(|_| {
+            error(
+                "rotation_failed",
+                "The rotated managed copy was saved but its backup needs attention.",
+            )
+        })
+    }
 }
 
 pub fn search_library(
@@ -277,10 +729,13 @@ pub fn recent_library_tags() -> Result<RecentTagsResult, SearchError> {
 }
 
 fn normalize_tags(tags: &[String]) -> Vec<String> {
-    tags.iter()
-        .map(|tag| normalize_tag(tag))
-        .filter(|tag| !tag.is_empty())
-        .collect()
+    let mut normalized = Vec::new();
+    for tag in tags.iter().map(|tag| normalize_tag(tag)) {
+        if !tag.is_empty() && !normalized.contains(&tag) {
+            normalized.push(tag);
+        }
+    }
+    normalized
 }
 
 fn normalize_tag(tag: &str) -> String {
@@ -614,5 +1069,171 @@ mod tests {
         assert!(validate_date_range(Some("2026-08-21"), Some("2026-08-20")).is_err());
         assert!(validate_date_range(Some("2026-08-20"), Some("2026-08-21")).is_ok());
         assert!(validate_date_range(None, Some("2026-08-21")).is_ok());
+    }
+
+    #[test]
+    fn managed_file_validation_rejects_missing_and_outside_files() {
+        let root = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let managed = root.path().join("managed.jpg");
+        fs::write(&managed, b"managed").unwrap();
+        fs::write(outside.path().join("outside.jpg"), b"outside").unwrap();
+
+        assert_eq!(
+            validate_managed_file(root.path(), &managed).unwrap(),
+            managed.canonicalize().unwrap()
+        );
+        assert_eq!(
+            validate_managed_file(root.path(), &root.path().join("missing.jpg"))
+                .unwrap_err()
+                .code,
+            "media_unavailable"
+        );
+        assert_eq!(
+            validate_managed_file(root.path(), &outside.path().join("outside.jpg"))
+                .unwrap_err()
+                .code,
+            "media_unavailable"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_file_validation_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let target = outside.path().join("outside.jpg");
+        fs::write(&target, b"outside").unwrap();
+        let link = root.path().join("linked.jpg");
+        symlink(&target, &link).unwrap();
+
+        assert_eq!(
+            validate_managed_file(root.path(), &link).unwrap_err().code,
+            "media_unavailable"
+        );
+    }
+
+    #[test]
+    fn tag_updates_normalize_deduplicate_replace_and_validate_managed_items() {
+        let _session_guard = library::test_session_guard();
+        let directory = tempdir().unwrap();
+        library::setup_library(library::SetupLibraryRequest {
+            folder_path: directory.path().display().to_string(),
+            password: "correct horse battery staple".into(),
+            password_confirmation: "correct horse battery staple".into(),
+            recovery_question: "pet".into(),
+            recovery_answer: "Mochi".into(),
+        })
+        .unwrap();
+        let managed = directory.path().join("managed.jpg");
+        fs::write(&managed, b"managed").unwrap();
+        library::with_catalogue(|connection, _| {
+            connection.execute_batch("INSERT INTO review_sessions (id, source_path, state) VALUES (1, 'source', 'complete'); INSERT INTO review_candidates (id, session_id, relative_path, file_size, modified_at, media_type, decision) VALUES (1, 1, 'managed.jpg', 1, 0, 'image', 'imported'), (2, 1, 'skipped.jpg', 1, 0, 'image', 'skipped'); INSERT INTO item_decisions (candidate_id, decision, destination_path, effective_import_date) VALUES (2, 'skipped', NULL, '2026-09-09'); INSERT INTO tags (id, normalized_name) VALUES (1, 'old'); INSERT INTO candidate_tags (candidate_id, tag_id) VALUES (1, 1);").map_err(database_error)?;
+            connection.execute(
+                "INSERT INTO item_decisions (candidate_id, decision, destination_path, effective_import_date) VALUES (1, 'imported', ?1, '2026-09-09')",
+                [managed.display().to_string()],
+            ).map_err(database_error)?;
+            Ok::<(), SearchError>(())
+        })
+        .unwrap();
+
+        let result = update_media_tags(UpdateMediaTagsRequest {
+            candidate_id: 1,
+            tags: vec![" Summer ".into(), "summer".into(), "Family Album".into()],
+        })
+        .unwrap();
+        assert_eq!(result.tags, ["summer", "family album"]);
+        let tags = library::with_catalogue(|connection, _| tags_for_item(connection, 1)).unwrap();
+        assert_eq!(tags, ["family album", "summer"]);
+        assert_eq!(
+            managed_media_path(ManagedMediaActionRequest { candidate_id: 1 }).unwrap(),
+            managed.canonicalize().unwrap()
+        );
+        assert_eq!(
+            update_media_tags(UpdateMediaTagsRequest {
+                candidate_id: 2,
+                tags: vec!["forbidden".into()],
+            })
+            .unwrap_err()
+            .code,
+            "media_unavailable"
+        );
+        library::lock_library();
+    }
+
+    #[test]
+    fn confirmed_rotation_and_deletion_preserve_managed_media_until_safe() {
+        let _session_guard = library::test_session_guard();
+        let directory = tempdir().unwrap();
+        library::setup_library(library::SetupLibraryRequest {
+            folder_path: directory.path().display().to_string(),
+            password: "correct horse battery staple".into(),
+            password_confirmation: "correct horse battery staple".into(),
+            recovery_question: "pet".into(),
+            recovery_answer: "Mochi".into(),
+        })
+        .unwrap();
+        let managed = directory.path().join("managed.png");
+        let source = tempdir().unwrap();
+        let original = source.path().join("original.png");
+        let image = image::RgbaImage::from_fn(2, 3, |x, y| image::Rgba([x as u8, y as u8, 0, 255]));
+        image.save(&managed).unwrap();
+        image.save(&original).unwrap();
+        library::with_catalogue(|connection, _| {
+            connection.execute_batch("INSERT INTO review_sessions (id, source_path, state) VALUES (1, 'source', 'complete'); INSERT INTO review_candidates (id, session_id, relative_path, file_size, modified_at, media_type, decision) VALUES (1, 1, 'managed.png', 1, 0, 'image', 'imported');").map_err(database_error)?;
+            connection.execute("INSERT INTO item_decisions (candidate_id, decision, destination_path, effective_import_date) VALUES (1, 'imported', ?1, '2026-09-09')", [managed.display().to_string()]).map_err(database_error)?;
+            Ok::<(), SearchError>(())
+        }).unwrap();
+
+        assert_eq!(
+            delete_managed_media(DeleteManagedMediaRequest {
+                candidate_id: 1,
+                confirmed: false
+            })
+            .unwrap_err()
+            .code,
+            "confirmation_required"
+        );
+        assert!(managed.exists());
+        rotate_image_file(&managed, RotationDirection::Right).unwrap();
+        assert_eq!(image::image_dimensions(&managed).unwrap(), (3, 2));
+        assert_eq!(image::image_dimensions(&original).unwrap(), (2, 3));
+        assert_eq!(
+            delete_managed_media_with_trash(
+                DeleteManagedMediaRequest {
+                    candidate_id: 1,
+                    confirmed: true
+                },
+                |_| Err("no Trash".into())
+            )
+            .unwrap_err()
+            .code,
+            "trash_failed"
+        );
+        assert!(managed.exists());
+        assert!(
+            library::with_catalogue(|connection, root| resolve_active_imported_item(
+                connection, root, 1
+            ))
+            .is_ok()
+        );
+        delete_managed_media_with_trash(
+            DeleteManagedMediaRequest {
+                candidate_id: 1,
+                confirmed: true,
+            },
+            |path| fs::remove_file(path).map_err(|error| error.to_string()),
+        )
+        .unwrap();
+        assert!(!managed.exists());
+        assert!(
+            library::with_catalogue(|connection, root| resolve_active_imported_item(
+                connection, root, 1
+            ))
+            .is_err()
+        );
+        library::lock_library();
     }
 }
