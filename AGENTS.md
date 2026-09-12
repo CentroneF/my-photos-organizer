@@ -26,4 +26,5 @@ Photo Handler is a local-first macOS and Windows desktop application built with 
 
 - Follow the current Rust structure: Dioxus components return `Element`; UI-to-native calls use Tauri command names and serializable argument structs as shown in @src/app.rs.
 - Keep public native command names and their frontend invocation strings synchronized. Change capability configuration alongside any command whose permissions require it; see @src-tauri/capabilities/default.json.
+- Use the bundled local Font Awesome Free assets and `fa-solid` classes for icon-only controls and decorative marks. Do not add an icon CDN or package unless the user explicitly requests it. Interactive icon-only controls must have both an `aria-label` and `title`; retain visible text labels for text-labelled actions.
 - Recent commits use Conventional Commit-style prefixes such as `feat:`, `docs:`, and `chore:`. Keep commit subjects concise and imperative.

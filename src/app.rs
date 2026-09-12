@@ -1728,9 +1728,9 @@ pub fn App() -> Element {
                         h2 { "Where should your library live?" }
                         p { class: "lede", "Start by choosing a folder. We’ll inspect it without changing anything, then guide you to the right next step." }
                         button { class: "folder-picker", r#type: "button", onclick: choose_folder, disabled: busy(),
-                            span { class: "folder-icon", "⌑" }
+                            span { class: "folder-icon", i { class: "fa-solid fa-folder", "aria-hidden": "true" } }
                             span { strong { if busy() { "Inspecting folder…" } else { "Choose a folder" } } small { "Empty folder or an existing Photo Organizer library" } }
-                            span { class: "arrow", "→" }
+                            span { class: "arrow", i { class: "fa-solid fa-arrow-right", "aria-hidden": "true" } }
                         }
                     } else if step() == "loading" {
                         p { class: "step-label", "STARTING" }
@@ -1798,10 +1798,11 @@ pub fn App() -> Element {
                                         class: "library-action-trigger",
                                         r#type: "button",
                                         "aria-label": "Library actions",
+                                        title: "Library actions",
                                         "aria-expanded": "{search_actions_open}",
                                         "aria-controls": "library-action-menu",
                                         onclick: move |_| search_actions_open.set(!search_actions_open()),
-                                        "⚙"
+                                        i { class: "fa-solid fa-gear", "aria-hidden": "true" }
                                     }
                                     if search_actions_open() {
                                         div { id: "library-action-menu", class: "library-action-popover", role: "menu",
@@ -1819,28 +1820,29 @@ pub fn App() -> Element {
                                         div { class: "applied-filter-bar", "aria-label": "Applied filters",
                                             strong { "Applied filters" }
                                             if !search_imported_start_date().is_empty() {
-                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_imported_start_date.set(String::new()), "Imported from: {search_imported_start_date} ×" }
+                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_imported_start_date.set(String::new()), "Imported from: {search_imported_start_date} " i { class: "fa-solid fa-xmark", "aria-hidden": "true" } }
                                             }
                                             if !search_imported_end_date().is_empty() {
-                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_imported_end_date.set(String::new()), "Imported to: {search_imported_end_date} ×" }
+                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_imported_end_date.set(String::new()), "Imported to: {search_imported_end_date} " i { class: "fa-solid fa-xmark", "aria-hidden": "true" } }
                                             }
                                             if !search_captured_start_date().is_empty() {
-                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_captured_start_date.set(String::new()), "Captured from: {search_captured_start_date} ×" }
+                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_captured_start_date.set(String::new()), "Captured from: {search_captured_start_date} " i { class: "fa-solid fa-xmark", "aria-hidden": "true" } }
                                             }
                                             if !search_captured_end_date().is_empty() {
-                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_captured_end_date.set(String::new()), "Captured to: {search_captured_end_date} ×" }
+                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_captured_end_date.set(String::new()), "Captured to: {search_captured_end_date} " i { class: "fa-solid fa-xmark", "aria-hidden": "true" } }
                                             }
                                             if search_media_types().is_empty() {
                                                 span { class: "applied-filter-empty", "No media types selected" }
                                             } else if search_media_types().len() != 2 || !search_media_types().iter().any(|media_type| media_type == "image") || !search_media_types().iter().any(|media_type| media_type == "video") {
                                                 for media_type in search_media_types() {
                                                     button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_media_types.with_mut(|media_types| media_types.retain(|selected| selected != &media_type)),
-                                                        if media_type == "image" { "Media: Images ×" } else { "Media: Videos ×" }
+                                                        if media_type == "image" { "Media: Images " } else { "Media: Videos " }
+                                                        i { class: "fa-solid fa-xmark", "aria-hidden": "true" }
                                                     }
                                                 }
                                             }
                                             for tag in search_selected_tags() {
-                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_selected_tags.with_mut(|tags| tags.retain(|selected| selected != &tag)), "{tag} ×" }
+                                                button { class: "applied-filter-chip", r#type: "button", onclick: move |_| search_selected_tags.with_mut(|tags| tags.retain(|selected| selected != &tag)), "{tag} " i { class: "fa-solid fa-xmark", "aria-hidden": "true" } }
                                             }
                                             button { class: "clear-filters-button", r#type: "button", onclick: move |_| { search_imported_start_date.set(String::new()); search_imported_end_date.set(String::new()); search_captured_start_date.set(String::new()); search_captured_end_date.set(String::new()); search_media_types.set(vec!["image".into(), "video".into()]); search_tag_input.set(String::new()); search_selected_tags.set(Vec::new()); }, "Clear all" }
                                         }
@@ -1852,11 +1854,11 @@ pub fn App() -> Element {
                                 }
                                 aside { class: "filter-sidebar", "aria-label": "Library filters",
                                     section { class: "filter-section",
-                                        button { class: "filter-disclosure", r#type: "button", "aria-expanded": "{search_dates_expanded}", onclick: move |_| search_dates_expanded.set(!search_dates_expanded()), span { "Date" } span { if search_dates_expanded() { "−" } else { "+" } } }
+                                        button { class: "filter-disclosure", r#type: "button", "aria-expanded": "{search_dates_expanded}", onclick: move |_| search_dates_expanded.set(!search_dates_expanded()), span { "Date" } i { class: if search_dates_expanded() { "fa-solid fa-chevron-up" } else { "fa-solid fa-chevron-down" }, "aria-hidden": "true" } }
                                         if search_dates_expanded() { div { class: "filter-section-content", strong { "Imported date" } div { class: "date-range-inputs", label { "From" input { r#type: "date", value: "{search_imported_start_date}", oninput: move |event| search_imported_start_date.set(event.value()) } } label { "To" input { r#type: "date", value: "{search_imported_end_date}", oninput: move |event| search_imported_end_date.set(event.value()) } } } strong { "Captured date" } div { class: "date-range-inputs", label { "From" input { r#type: "date", value: "{search_captured_start_date}", oninput: move |event| search_captured_start_date.set(event.value()) } } label { "To" input { r#type: "date", value: "{search_captured_end_date}", oninput: move |event| search_captured_end_date.set(event.value()) } } } } }
                                     }
                                     section { class: "filter-section",
-                                        button { class: "filter-disclosure", r#type: "button", "aria-expanded": "{search_media_expanded}", onclick: move |_| search_media_expanded.set(!search_media_expanded()), span { "Media type" } span { if search_media_expanded() { "−" } else { "+" } } }
+                                        button { class: "filter-disclosure", r#type: "button", "aria-expanded": "{search_media_expanded}", onclick: move |_| search_media_expanded.set(!search_media_expanded()), span { "Media type" } i { class: if search_media_expanded() { "fa-solid fa-chevron-up" } else { "fa-solid fa-chevron-down" }, "aria-hidden": "true" } }
                                         if search_media_expanded() {
                                             div { class: "filter-section-content media-type-options",
                                                 label { class: "media-type-option",
@@ -1893,7 +1895,7 @@ pub fn App() -> Element {
                                         }
                                     }
                                     section { class: "filter-section",
-                                        button { class: "filter-disclosure", r#type: "button", "aria-expanded": "{search_tags_expanded}", onclick: move |_| search_tags_expanded.set(!search_tags_expanded()), span { "Tags" } span { if search_tags_expanded() { "−" } else { "+" } } }
+                                        button { class: "filter-disclosure", r#type: "button", "aria-expanded": "{search_tags_expanded}", onclick: move |_| search_tags_expanded.set(!search_tags_expanded()), span { "Tags" } i { class: if search_tags_expanded() { "fa-solid fa-chevron-up" } else { "fa-solid fa-chevron-down" }, "aria-hidden": "true" } }
                                         if search_tags_expanded() { div { class: "filter-section-content tag-filter", label { "Search tags" input { value: "{search_tag_input}", oninput: move |event| search_tag_input.set(event.value()), placeholder: "Search imported tags", "aria-describedby": "tag-list-help" } } small { id: "tag-list-help", "Top tags and search results include imported media only." }
                                             div { class: "tag-options", role: "group", "aria-label": "Imported tags", for tag in library_tag_options() { button { class: "tag-option", r#type: "button", "aria-pressed": "{search_selected_tags().contains(&tag)}", onclick: move |_| { let tag = tag.clone(); search_selected_tags.with_mut(|tags| { if tags.contains(&tag) { tags.retain(|selected| selected != &tag); } else { tags.push(tag); tags.sort(); } }); }, "{tag}" } } }
                                         } }
@@ -1947,9 +1949,9 @@ pub fn App() -> Element {
                             button { class: "secondary-button", r#type: "button", onclick: move |_| step.set("home".into()), disabled: busy(), "Back" }
                         } else {
                             button { class: "folder-picker", r#type: "button", onclick: choose_import_source, disabled: busy(),
-                                span { class: "folder-icon", "⌑" }
+                                span { class: "folder-icon", i { class: "fa-solid fa-folder", "aria-hidden": "true" } }
                                 span { strong { if busy() { "Saving import folder…" } else { "Choose import folder" } } small { "Any folder is allowed except your protected library" } }
-                                span { class: "arrow", "→" }
+                                span { class: "arrow", i { class: "fa-solid fa-arrow-right", "aria-hidden": "true" } }
                             }
                             button { class: "secondary-button", r#type: "button", onclick: move |_| step.set("home".into()), disabled: busy(), "Back" }
                         }
@@ -2008,12 +2010,13 @@ pub fn App() -> Element {
                                                     button {
                                                         r#type: "button",
                                                         "aria-label": "Remove {tag}",
+                                                        title: "Remove {tag}",
                                                         onclick: move |_| {
                                                             let mut tags = review_selected_tags();
                                                             tags.retain(|selected| selected != &tag);
                                                             review_selected_tags.set(tags);
                                                         },
-                                                        "×"
+                                                        i { class: "fa-solid fa-xmark", "aria-hidden": "true" }
                                                     }
                                                 }
                                             }
@@ -2226,7 +2229,7 @@ pub fn App() -> Element {
                                                     div { class: "review-tag-editor",
                                                         for tag in detail.tags.clone() {
                                                             span { class: "review-tag-chip", "{tag}"
-                                                                button { r#type: "button", "aria-label": "Remove tag {tag}", disabled: preview_tag_busy(), onclick: move |_| { let mut tags = preview_detail().map(|detail| detail.tags).unwrap_or_default(); tags.retain(|selected| selected != &tag); preview_tag_save_request.set(Some((detail.candidate_id, tags))); }, "×" }
+                                                                button { r#type: "button", "aria-label": "Remove tag {tag}", title: "Remove tag {tag}", disabled: preview_tag_busy(), onclick: move |_| { let mut tags = preview_detail().map(|detail| detail.tags).unwrap_or_default(); tags.retain(|selected| selected != &tag); preview_tag_save_request.set(Some((detail.candidate_id, tags))); }, i { class: "fa-solid fa-xmark", "aria-hidden": "true" } }
                                                             }
                                                         }
                                                         input { value: "{preview_tag_draft}", placeholder: "Type a tag and press Space", disabled: preview_tag_busy(), oninput: move |event| { let value = event.value(); let commits = value.split_whitespace().collect::<Vec<_>>(); let ends_with_space = value.chars().last().is_some_and(char::is_whitespace); let draft = if ends_with_space { String::new() } else { commits.last().copied().unwrap_or_default().to_owned() }; let commit_count = commits.len().saturating_sub((!ends_with_space) as usize); if commit_count > 0 { let mut tags = preview_detail().map(|detail| detail.tags).unwrap_or_default(); for tag in commits.into_iter().take(commit_count) { let tag = normalize_tag(tag); if !tag.is_empty() && !tags.contains(&tag) { tags.push(tag); } } preview_tag_save_request.set(Some((detail.candidate_id, tags))); } preview_tag_draft.set(draft); }, onkeydown: move |event| { if event.key() == Key::Enter { event.prevent_default(); let tag = normalize_tag(&preview_tag_draft()); let mut tags = preview_detail().map(|detail| detail.tags).unwrap_or_default(); if !tag.is_empty() && !tags.contains(&tag) { tags.push(tag); preview_tag_save_request.set(Some((detail.candidate_id, tags))); } } } }
@@ -2327,6 +2330,7 @@ pub fn App() -> Element {
 
 #[cfg(test)]
 mod review_layout_tests {
+    const AGENT_GUIDANCE: &str = include_str!("../AGENTS.md");
     const STYLES: &str = include_str!("../assets/styles.css");
 
     #[test]
@@ -2511,8 +2515,8 @@ mod review_layout_tests {
             "Images",
             "Videos",
             "No media types selected.",
-            "Media: Images ×",
-            "Media: Videos ×",
+            "Media: Images ",
+            "Media: Videos ",
             "library_tag_options",
             "tag-options",
             "tag-option",
@@ -2568,6 +2572,43 @@ mod review_layout_tests {
                 "missing library-search style: {rule}"
             );
         }
+    }
+
+    #[test]
+    fn icon_only_controls_use_local_font_awesome_with_accessible_context() {
+        let source = include_str!("app.rs");
+        let app_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("application source must precede its tests");
+
+        for hook in [
+            "/assets/fontawesome/css/all.min.css",
+            "fa-solid fa-folder",
+            "fa-solid fa-arrow-right",
+            "fa-solid fa-gear",
+            "fa-solid fa-chevron-up",
+            "fa-solid fa-chevron-down",
+            "fa-solid fa-xmark",
+            "title: \"Library actions\"",
+            "title: \"Remove {tag}\"",
+            "title: \"Remove tag {tag}\"",
+        ] {
+            assert!(
+                app_source.contains(hook),
+                "missing Font Awesome hook: {hook}"
+            );
+        }
+        for removed_glyph in ["\u{2311}", "\u{2192}", "\u{2699}", "\u{2212}"] {
+            assert!(
+                !app_source.contains(removed_glyph),
+                "replaced UI glyph returned: {removed_glyph}"
+            );
+        }
+        assert!(!app_source.contains("Media: Images \u{00d7}"));
+        assert!(!app_source.contains("Media: Videos \u{00d7}"));
+        assert!(AGENT_GUIDANCE.contains("bundled local Font Awesome Free assets"));
+        assert!(AGENT_GUIDANCE.contains("`aria-label` and `title`"));
     }
 
     #[test]

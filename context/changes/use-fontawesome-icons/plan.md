@@ -158,10 +158,10 @@ No data, API, command, capability, or persisted-state migration is required.
 
 Automated:
 
-- [ ] 1.1 Replace scoped icon-only and decorative glyphs with local Font Awesome Free markup.
-- [ ] 1.2 Add accessibility metadata, styling adjustments, future-agent guidance, and regression coverage.
-- [ ] 1.3 Run `cargo fmt --check` and `cargo test --workspace`.
+- [x] 1.1 Replace scoped icon-only and decorative glyphs with local Font Awesome Free markup.
+- [x] 1.2 Add accessibility metadata, styling adjustments, future-agent guidance, and regression coverage.
+- [x] 1.3 Run `cargo fmt --check` and `cargo test --workspace`.
 
 Manual:
 
-- [ ] 1.4 Verify the refreshed icons, tooltips, keyboard operation, and existing preview toolbar in the desktop app.
+- [x] 1.4 Verify the refreshed icons, tooltips, keyboard operation, and existing preview toolbar in the desktop app.

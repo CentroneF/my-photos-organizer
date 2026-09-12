@@ -1,7 +1,7 @@
 ---
 change_id: use-fontawesome-icons
 title: Use Font Awesome icons
-status: planned
+status: implementing
 created: 2026-09-12
 updated: 2026-09-12
 archived_at: null
