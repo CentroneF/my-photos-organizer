@@ -27,6 +27,9 @@ html, body, #main { min-height: 100%; margin: 0; }
 button, input { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: wait; opacity: .65; }
+.library-action-trigger .fa-solid { display: block; }
+.filter-disclosure .fa-solid { font-size: .8rem; font-style: normal; }
+.applied-filter-chip .fa-solid { margin-left: .1rem; font-size: .75em; font-style: normal; }
 
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: minmax(18rem, 38%) 1fr; background: #f7f4ee; }
 .app-shell.selected-library-workspace { display: block; }
@@ -59,6 +62,7 @@ button:disabled { cursor: wait; opacity: .65; }
 .folder-picker small { color: #777a85; font-size: .8rem; }
 .folder-icon { width: 3rem; height: 3rem; display: grid; place-items: center; border-radius: .9rem; color: #fff; background: #5b55a5; font-size: 1.6rem; }
 .arrow { color: #5b55a5; font-size: 1.5rem; }
+.folder-icon .fa-solid, .arrow .fa-solid, .library-action-trigger .fa-solid { font-style: normal; }
 
 .folder-summary { position: relative; display: grid; gap: .2rem; margin: 0 0 1.5rem; padding: 1rem 5rem 1rem 1.1rem; border-left: 3px solid #f2c572; border-radius: .3rem .9rem .9rem .3rem; background: #efebe1; }
 .folder-summary span { color: #79776f; font-size: .7rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
@@ -104,6 +108,7 @@ button:disabled { cursor: wait; opacity: .65; }
 .review-tag-editor input:focus { box-shadow: none; }
 .review-tag-chip { display: inline-flex; align-items: center; gap: .3rem; padding: .28rem .35rem .28rem .55rem; border-radius: .45rem; color: #4d488e; background: #e7e4f5; font-size: .78rem; font-weight: 700; }
 .review-tag-chip button { border: 0; padding: 0 .15rem; color: inherit; background: transparent; font-weight: 900; line-height: 1; }
+.review-tag-chip button .fa-solid { display: block; font-size: .75em; font-style: normal; }
 .recent-review-tags { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; }.recent-review-tags small { width: 100%; color: #777a85; font-size: .72rem; }.recent-review-tags .tag-chip[aria-pressed="true"] { color: #fff; background: #5b55a5; }
 .exact-history { display: grid; gap: .55rem; max-height: 12rem; overflow: auto; padding-right: .2rem; }
 .similar-history { display: grid; gap: .45rem; max-height: 12rem; overflow: auto; }.similar-history-item { display: grid; grid-template-columns: 3rem minmax(0, 1fr); gap: .4rem; align-items: center; padding: .55rem; border-radius: .65rem; background: #e7e4f5; }.similar-history-item img { grid-row: span 2; width: 3rem; height: 3rem; object-fit: cover; border-radius: .4rem; }.similar-history-item small { overflow-wrap: anywhere; font-size: .7rem; }
