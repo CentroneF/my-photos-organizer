@@ -1,7 +1,7 @@
 ---
 change_id: open-street-map-view
 title: Open street map view
-status: planned
+status: implementing
 created: 2026-09-17
 updated: 2026-09-17
 archived_at: null

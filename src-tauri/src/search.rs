@@ -74,6 +74,7 @@ pub struct SearchLibraryItem {
     pub tags: Vec<String>,
     pub preview_url: Option<String>,
     pub preview_state: &'static str,
+    pub gps: Option<crate::review::GpsCoordinates>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -186,6 +187,7 @@ struct CatalogueItem {
     effective_import_date: Option<String>,
     original_media_date: Option<String>,
     tags: Vec<String>,
+    gps: Option<crate::review::GpsCoordinates>,
 }
 
 struct ResolvedImportedItem {
@@ -609,6 +611,7 @@ pub fn search_library(
                     tags: item.tags,
                     preview_url,
                     preview_state,
+                    gps: item.gps,
                 }
             })
             .collect(),
@@ -627,7 +630,7 @@ fn query_imported_items(
     if media_types.is_empty() {
         return Ok(vec![]);
     }
-    let mut sql = "SELECT d.candidate_id, d.destination_path, c.media_type, d.effective_import_date, d.original_media_date FROM item_decisions d JOIN review_candidates c ON c.id = d.candidate_id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND d.replaced_by_candidate_id IS NULL AND (?1 IS NULL OR d.effective_import_date >= ?1) AND (?2 IS NULL OR d.effective_import_date <= ?2) AND (?3 IS NULL OR d.original_media_date >= ?3) AND (?4 IS NULL OR d.original_media_date <= ?4) AND c.media_type IN (".to_owned();
+    let mut sql = "SELECT d.candidate_id, d.destination_path, c.media_type, d.effective_import_date, d.original_media_date, d.gps_json FROM item_decisions d JOIN review_candidates c ON c.id = d.candidate_id WHERE d.decision = 'imported' AND d.destination_path IS NOT NULL AND d.replaced_by_candidate_id IS NULL AND (?1 IS NULL OR d.effective_import_date >= ?1) AND (?2 IS NULL OR d.effective_import_date <= ?2) AND (?3 IS NULL OR d.original_media_date >= ?3) AND (?4 IS NULL OR d.original_media_date <= ?4) AND c.media_type IN (".to_owned();
     for index in 0..media_types.len() {
         if index > 0 {
             sql.push_str(", ");
@@ -654,12 +657,23 @@ fn query_imported_items(
     values.extend(tags.iter().cloned().map(Value::from));
     let rows = statement
         .query_map(params_from_iter(values), |row| {
-            Ok((
+            Ok::<
+                (
+                    i64,
+                    String,
+                    String,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                ),
+                rusqlite::Error,
+            >((
                 row.get(0)?,
                 row.get(1)?,
                 row.get(2)?,
                 row.get(3)?,
                 row.get(4)?,
+                row.get(5)?,
             ))
         })
         .map_err(database_error)?;
@@ -670,7 +684,9 @@ fn query_imported_items(
             media_type,
             effective_import_date,
             original_media_date,
+            gps_json,
         ) = row.map_err(database_error)?;
+        let gps = validated_gps_coordinates(gps_json.as_deref(), &media_type);
         Ok(CatalogueItem {
             candidate_id,
             destination_path,
@@ -678,9 +694,29 @@ fn query_imported_items(
             effective_import_date,
             original_media_date,
             tags: tags_for_item(connection, candidate_id)?,
+            gps,
         })
     })
     .collect()
+}
+
+fn validated_gps_coordinates(
+    gps_json: Option<&str>,
+    media_type: &str,
+) -> Option<crate::review::GpsCoordinates> {
+    if media_type != "image" {
+        return None;
+    }
+    let value = serde_json::from_str::<serde_json::Value>(gps_json?).ok()?;
+    if !value.is_object() {
+        return None;
+    }
+    let coordinates = serde_json::from_value::<crate::review::GpsCoordinates>(value).ok()?;
+    (coordinates.latitude.is_finite()
+        && (-90.0..=90.0).contains(&coordinates.latitude)
+        && coordinates.longitude.is_finite()
+        && (-180.0..=180.0).contains(&coordinates.longitude))
+    .then_some(coordinates)
 }
 
 pub fn list_library_tags(
@@ -845,6 +881,89 @@ mod tests {
     #[test]
     fn date_validation_rejects_bad_ranges() {
         assert!(validate_date(Some("2026-02-30")).is_err());
+    }
+
+    #[test]
+    fn query_exposes_only_valid_gps_for_active_imported_images() {
+        let _session_guard = library::test_session_guard();
+        let directory = tempdir().unwrap();
+        library::setup_library(library::SetupLibraryRequest {
+            folder_path: directory.path().display().to_string(),
+            password: "correct horse battery staple".into(),
+            password_confirmation: "correct horse battery staple".into(),
+            recovery_question: "pet".into(),
+            recovery_answer: "Mochi".into(),
+        })
+        .unwrap();
+        library::with_catalogue(|connection, _| {
+            connection.execute_batch(
+                "INSERT INTO review_sessions (id, source_path, state) VALUES (1, 'source', 'complete');
+                 INSERT INTO review_candidates (id, session_id, relative_path, file_size, modified_at, media_type, decision) VALUES
+                 (1, 1, 'valid.jpg', 1, 0, 'image', 'imported'),
+                 (2, 1, 'missing.jpg', 1, 0, 'image', 'imported'),
+                 (3, 1, 'malformed.jpg', 1, 0, 'image', 'imported'),
+                 (4, 1, 'outside-range.jpg', 1, 0, 'image', 'imported'),
+                 (5, 1, 'video.mp4', 1, 0, 'video', 'imported'),
+                 (6, 1, 'skipped.jpg', 1, 0, 'image', 'skipped'),
+                 (7, 1, 'replaced.jpg', 1, 0, 'image', 'imported');
+                 INSERT INTO item_decisions (candidate_id, decision, destination_path, effective_import_date, gps_json, replaced_by_candidate_id) VALUES
+                 (1, 'imported', 'valid.jpg', '2026-09-17', '{\"latitude\":52.229676,\"longitude\":21.012229}', NULL),
+                 (2, 'imported', 'missing.jpg', '2026-09-17', NULL, NULL),
+                 (3, 'imported', 'malformed.jpg', '2026-09-17', '{\"latitude\":\"north\",\"longitude\":21.012229}', NULL),
+                 (4, 'imported', 'outside-range.jpg', '2026-09-17', '{\"latitude\":91.0,\"longitude\":21.012229}', NULL),
+                 (5, 'imported', 'video.mp4', '2026-09-17', '{\"latitude\":52.229676,\"longitude\":21.012229}', NULL),
+                 (6, 'skipped', NULL, '2026-09-17', '{\"latitude\":52.229676,\"longitude\":21.012229}', NULL),
+                 (7, 'imported', 'replaced.jpg', '2026-09-17', '{\"latitude\":52.229676,\"longitude\":21.012229}', 1);",
+            )
+            .map_err(database_error)?;
+            Ok::<(), SearchError>(())
+        })
+        .unwrap();
+
+        let items = library::with_catalogue(|connection, _| {
+            query_imported_items(
+                connection,
+                None,
+                None,
+                None,
+                None,
+                &[MediaType::Image, MediaType::Video],
+                &[],
+            )
+        })
+        .unwrap();
+
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.candidate_id)
+                .collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5]
+        );
+        assert_eq!(
+            items[0]
+                .gps
+                .as_ref()
+                .map(|gps| (gps.latitude, gps.longitude)),
+            Some((52.229_676, 21.012_229))
+        );
+        assert!(items[1..].iter().all(|item| item.gps.is_none()));
+        library::lock_library();
+    }
+
+    #[test]
+    fn gps_validation_rejects_non_finite_and_wrong_shape_coordinates() {
+        assert!(validated_gps_coordinates(
+            Some(r#"{"latitude":NaN,"longitude":21.012229}"#),
+            "image"
+        )
+        .is_none());
+        assert!(validated_gps_coordinates(
+            Some(r#"{"latitude":52.229676,"longitude":181.0}"#),
+            "image"
+        )
+        .is_none());
+        assert!(validated_gps_coordinates(Some(r#"[52.229676, 21.012229]"#), "image").is_none());
     }
 
     #[test]

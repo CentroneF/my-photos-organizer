@@ -318,6 +318,8 @@ struct SearchLibraryItem {
     tags: Vec<String>,
     preview_url: Option<String>,
     preview_state: String,
+    #[serde(default)]
+    gps: Option<GpsCoordinates>,
 }
 
 #[derive(Serialize)]
@@ -2339,6 +2341,22 @@ mod review_layout_tests {
             super::cache_busted_preview_url("asset://localhost/managed-image", 7),
             "asset://localhost/managed-image?preview_revision=7"
         );
+    }
+
+    #[test]
+    fn library_search_result_accepts_an_optional_gps_coordinate() {
+        let result = serde_json::from_str::<super::SearchLibraryResult>(
+            r#"{"items":[{"candidateId":1,"filename":"photo.jpg","mediaType":"image","effectiveImportDate":"2026-09-17","originalMediaDate":null,"tags":[],"previewUrl":null,"previewState":"unavailable","gps":{"latitude":52.229676,"longitude":21.012229}},{"candidateId":2,"filename":"untagged.jpg","mediaType":"image","effectiveImportDate":null,"originalMediaDate":null,"tags":[],"previewUrl":null,"previewState":"unavailable"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            result.items[0]
+                .gps
+                .as_ref()
+                .map(|gps| (gps.latitude, gps.longitude)),
+            Some((52.229_676, 21.012_229))
+        );
+        assert!(result.items[1].gps.is_none());
     }
 
     #[test]

@@ -251,13 +251,13 @@ No catalogue migration or GPS backfill is required. `gps_json` is already nullab
 
 #### Automated
 
-- [ ] 1.1 `cargo test --workspace` passes, including filtered-search coordinate validation and exclusion cases
-- [ ] 1.2 `cargo check --workspace` succeeds with synchronized Rust/Tauri DTOs
+- [x] 1.1 `cargo test --workspace` passes, including filtered-search coordinate validation and exclusion cases
+- [x] 1.2 `cargo check --workspace` succeeds with synchronized Rust/Tauri DTOs
 
 #### Manual
 
-- [ ] 1.3 Existing grid and preview behavior remains unchanged for GPS-tagged and non-GPS imports under active filters
-- [ ] 1.4 Reopening the protected library preserves searchable imports without changing media files
+- [x] 1.3 Existing grid and preview behavior remains unchanged for GPS-tagged and non-GPS imports under active filters
+- [x] 1.4 Reopening the protected library preserves searchable imports without changing media files
 
 ### Phase 2: Deliver the map/list workspace transition
 
