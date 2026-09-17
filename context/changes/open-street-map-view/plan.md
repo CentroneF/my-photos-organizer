@@ -251,25 +251,25 @@ No catalogue migration or GPS backfill is required. `gps_json` is already nullab
 
 #### Automated
 
-- [x] 1.1 `cargo test --workspace` passes, including filtered-search coordinate validation and exclusion cases
-- [x] 1.2 `cargo check --workspace` succeeds with synchronized Rust/Tauri DTOs
+- [x] 1.1 `cargo test --workspace` passes, including filtered-search coordinate validation and exclusion cases — 3ef5386
+- [x] 1.2 `cargo check --workspace` succeeds with synchronized Rust/Tauri DTOs — 3ef5386
 
 #### Manual
 
-- [x] 1.3 Existing grid and preview behavior remains unchanged for GPS-tagged and non-GPS imports under active filters
-- [x] 1.4 Reopening the protected library preserves searchable imports without changing media files
+- [x] 1.3 Existing grid and preview behavior remains unchanged for GPS-tagged and non-GPS imports under active filters — 3ef5386
+- [x] 1.4 Reopening the protected library preserves searchable imports without changing media files — 3ef5386
 
 ### Phase 2: Deliver the map/list workspace transition
 
 #### Automated
 
-- [ ] 2.1 `cargo test --workspace` passes with map/list navigation and preview-context source contracts
-- [ ] 2.2 `cargo check --workspace` succeeds without producing a DMG bundle
+- [x] 2.1 `cargo test --workspace` passes with map/list navigation and preview-context source contracts
+- [x] 2.2 `cargo check --workspace` succeeds without producing a DMG bundle
 
 #### Manual
 
-- [ ] 2.3 Map replaces the grid and Back to list restores filters and grid scroll position
-- [ ] 2.4 Zero-GPS and tile-loading failure states explain the condition and recover to the list
+- [x] 2.3 Map replaces the grid and Back to list restores filters and grid scroll position
+- [x] 2.4 Zero-GPS and tile-loading failure states explain the condition and recover to the list
 
 ### Phase 3: Render bundled OpenStreetMap tiles and clustered selectable pins
 

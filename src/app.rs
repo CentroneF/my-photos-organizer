@@ -44,12 +44,24 @@ export function focus_media_preview() {
     document.querySelector("[data-media-preview-dialog]")?.focus();
   });
 }
+
+export function library_results_scroll_y() {
+  return window.scrollY;
+}
+
+export function restore_library_results_scroll(y) {
+  requestAnimationFrame(() => window.scrollTo(0, y));
+}
 "#)]
 extern "C" {
     #[wasm_bindgen(catch)]
     fn warm_video_preview(video: &web_sys::HtmlVideoElement) -> Result<js_sys::Promise, JsValue>;
 
     fn focus_media_preview();
+
+    fn library_results_scroll_y() -> f64;
+
+    fn restore_library_results_scroll(y: f64);
 }
 
 #[derive(Serialize)]
@@ -603,6 +615,9 @@ pub fn App() -> Element {
     let mut search_dates_expanded = use_signal(|| true);
     let mut search_media_expanded = use_signal(|| true);
     let mut search_tags_expanded = use_signal(|| true);
+    let mut library_view = use_signal(|| "list".to_owned());
+    let mut library_list_scroll_y = use_signal(|| 0_f64);
+    let mut map_load_error = use_signal(|| false);
     let mut preview_index = use_signal(|| None::<usize>);
     let mut preview_detail = use_signal(|| None::<MediaDetails>);
     let mut preview_loading = use_signal(|| false);
@@ -621,6 +636,12 @@ pub fn App() -> Element {
     let mut preview_tag_save_request = use_signal(|| None::<(i64, Vec<String>)>);
     let mut preview_copy_request = use_signal(|| None::<i64>);
     let mut preview_reveal_request = use_signal(|| None::<i64>);
+
+    use_effect(move || {
+        if step() == "home" && library_view() == "list" {
+            restore_library_results_scroll(library_list_scroll_y());
+        }
+    });
 
     use_effect(move || {
         spawn(async move {
@@ -1442,6 +1463,14 @@ pub fn App() -> Element {
         preview_tag_draft.set(String::new());
         preview_copied.set(false);
     };
+    let mut open_map_item = move |candidate_id: i64| {
+        if let Some(index) = search_items()
+            .iter()
+            .position(|item| item.candidate_id == candidate_id)
+        {
+            load_preview(index);
+        }
+    };
     let mut previous_preview = move || {
         if let Some(index) = preview_index() {
             if index > 0 {
@@ -1456,6 +1485,10 @@ pub fn App() -> Element {
             }
         }
     };
+    let map_items = search_items()
+        .into_iter()
+        .filter(|item| item.media_type == "image" && item.gps.is_some())
+        .collect::<Vec<_>>();
 
     use_effect(move || {
         let Some((candidate_id, tags)) = preview_tag_save_request() else {
@@ -1850,9 +1883,38 @@ pub fn App() -> Element {
                                         }
                                     }
                                     if !search_captured_start_date().is_empty() || !search_captured_end_date().is_empty() { p { class: "privacy-note", "Captured dates are available only for imports made after this feature was added. Earlier imports remain searchable by imported date." } }
-                                    if search_loading() { p { class: "privacy-note", "Loading imported media…" } }
-                                    if !search_loading() && search_items().is_empty() { div { class: "library-empty", "data-testid": "library-empty-state", if search_media_types().is_empty() { h3 { "No media types selected." } p { "Select Images or Videos to show matching imported media." } } else if !search_imported_start_date().is_empty() || !search_imported_end_date().is_empty() || !search_captured_start_date().is_empty() || !search_captured_end_date().is_empty() || search_media_types().len() != 2 || !search_selected_tags().is_empty() { h3 { "No media matches these filters." } p { "Adjust or clear filters to see other managed media." } } else { h3 { "No media has been imported yet." } p { "Use Import media to safely review a folder and create managed copies. Originals are never moved or deleted." } button { class: "primary-button", r#type: "button", onclick: move |_| step.set("import".into()), "Import media" } } } }
-                                    if !search_loading() && !search_items().is_empty() { div { class: "media-grid", "data-testid": "library-search-grid", for (index, item) in search_items().into_iter().enumerate() { button { class: "media-card", r#type: "button", "aria-label": "Open preview for {item.filename}", onclick: move |_| load_preview(index), div { class: "media-card-preview", if item.preview_state == "available" && item.preview_url.is_some() { if item.media_type == "video" { VideoCardPreview { key: "{item.preview_url.clone().unwrap_or_default()}", preview_url: item.preview_url.clone().unwrap_or_default() } } else { img { src: "{item.preview_url.clone().unwrap_or_default()}", alt: "Preview of {item.filename}" } } } else { p { class: "preview-fallback", "Preview unavailable" } } } } } } }
+                                    div { class: "library-results-toolbar",
+                                        if library_view() == "list" {
+                                            button { class: "secondary-button map-view-button", r#type: "button", onclick: move |_| { library_list_scroll_y.set(library_results_scroll_y()); map_load_error.set(false); library_view.set("map".into()); }, i { class: "fa-solid fa-map-location-dot", "aria-hidden": "true" } "Show map" }
+                                        }
+                                    }
+                                    if library_view() == "map" {
+                                        div { class: "map-workspace", "data-testid": "library-map-view",
+                                            div { class: "map-toolbar",
+                                                button { class: "secondary-button map-back-button", r#type: "button", "aria-label": "Back to list", title: "Back to list", onclick: move |_| library_view.set("list".into()), i { class: "fa-solid fa-arrow-left", "aria-hidden": "true" } }
+                                                strong { "Map view" }
+                                            }
+                                            if map_load_error() {
+                                                div { class: "map-state map-error", role: "alert", "data-testid": "map-load-error", h3 { "Map needs an internet connection." } p { "Could not load map tiles. Check your connection, then return to the media list." } button { class: "secondary-button", r#type: "button", onclick: move |_| library_view.set("list".into()), "Back to list" } }
+                                            } else if search_loading() {
+                                                div { class: "map-state", role: "status", "Loading matching locations…" }
+                                            } else if map_items.is_empty() {
+                                                div { class: "map-state", "data-testid": "map-empty-state", h3 { "No matching photos have a location." } p { "Photos without saved GPS coordinates are not shown on the map." } button { class: "secondary-button", r#type: "button", onclick: move |_| library_view.set("list".into()), "Back to list" } }
+                                            } else {
+                                                div { class: "map-canvas", role: "region", "aria-label": "Photo map", "data-testid": "map-canvas", p { "Map rendering will appear here." }
+                                                    div { class: "map-media-list", "aria-label": "Photos ready for map selection",
+                                                        for item in map_items.clone() {
+                                                            button { class: "map-media-placeholder", r#type: "button", onclick: move |_| open_map_item(item.candidate_id), "Open preview for {item.filename}" }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        if search_loading() { p { class: "privacy-note", "Loading imported media…" } }
+                                        if !search_loading() && search_items().is_empty() { div { class: "library-empty", "data-testid": "library-empty-state", if search_media_types().is_empty() { h3 { "No media types selected." } p { "Select Images or Videos to show matching imported media." } } else if !search_imported_start_date().is_empty() || !search_imported_end_date().is_empty() || !search_captured_start_date().is_empty() || !search_captured_end_date().is_empty() || search_media_types().len() != 2 || !search_selected_tags().is_empty() { h3 { "No media matches these filters." } p { "Adjust or clear filters to see other managed media." } } else { h3 { "No media has been imported yet." } p { "Use Import media to safely review a folder and create managed copies. Originals are never moved or deleted." } button { class: "primary-button", r#type: "button", onclick: move |_| step.set("import".into()), "Import media" } } } }
+                                        if !search_loading() && !search_items().is_empty() { div { class: "media-grid", "data-testid": "library-search-grid", for (index, item) in search_items().into_iter().enumerate() { button { class: "media-card", r#type: "button", "aria-label": "Open preview for {item.filename}", onclick: move |_| load_preview(index), div { class: "media-card-preview", if item.preview_state == "available" && item.preview_url.is_some() { if item.media_type == "video" { VideoCardPreview { key: "{item.preview_url.clone().unwrap_or_default()}", preview_url: item.preview_url.clone().unwrap_or_default() } } else { img { src: "{item.preview_url.clone().unwrap_or_default()}", alt: "Preview of {item.filename}" } } } else { p { class: "preview-fallback", "Preview unavailable" } } } } } } }
+                                    }
                                 }
                                 aside { class: "filter-sidebar", "aria-label": "Library filters",
                                     section { class: "filter-section",
@@ -2357,6 +2419,38 @@ mod review_layout_tests {
             Some((52.229_676, 21.012_229))
         );
         assert!(result.items[1].gps.is_none());
+    }
+
+    #[test]
+    fn library_map_transition_preserves_context_and_exposes_recovery_states() {
+        let source = include_str!("app.rs");
+        for hook in [
+            "Show map",
+            "library_view",
+            "library_list_scroll_y",
+            "library_results_scroll_y",
+            "restore_library_results_scroll",
+            "Back to list",
+            "map-empty-state",
+            "No matching photos have a location.",
+            "map-load-error",
+            "Map needs an internet connection.",
+            "map_load_error",
+            "open_map_item",
+            "position(|item| item.candidate_id == candidate_id)",
+            "load_preview(index)",
+            "fa-solid fa-map-location-dot",
+            "fa-solid fa-arrow-left",
+        ] {
+            assert!(source.contains(hook), "missing library map hook: {hook}");
+        }
+        for rule in [
+            ".map-workspace { display: grid;",
+            ".map-canvas, .map-state { display: grid;",
+            ".map-back-button:focus-visible, .map-view-button:focus-visible",
+        ] {
+            assert!(STYLES.contains(rule), "missing library map style: {rule}");
+        }
     }
 
     #[test]
