@@ -44,3 +44,7 @@ From the repository root, start the desktop application:
 ```sh
 cargo tauri dev
 ```
+
+This command automatically starts the Dioxus development server with
+`dx serve --port 1420` before launching Tauri. Do not run that command in a
+separate terminal at the same time: it would conflict on port 1420.
